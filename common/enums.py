@@ -51,3 +51,11 @@ class BackendMode(Enum):
 
     PYTHON = "PYTHON"
     NATIVE = "NATIVE"
+
+
+class CaptureMode(Enum):
+    """Controls how much work the receiver does per packet."""
+
+    FAST = "FAST"       # count + validate only (no parsed dict, no export per packet)
+    EXPORT = "EXPORT"   # write JSON/PCAP but skip heavy per-packet on_packet callback
+    DEBUG = "DEBUG"     # full parsed dict per packet (current legacy behaviour)

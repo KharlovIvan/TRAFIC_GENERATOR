@@ -34,7 +34,8 @@ class TestSenderConfigValidation:
         assert not any("MAC" in e for e in errors)
 
     def test_negative_pps(self):
-        cfg = SenderConfig(interface="eth0", packets_per_second=0)
+        # pps=0 is now valid (unlimited rate); negative values are still rejected
+        cfg = SenderConfig(interface="eth0", packets_per_second=-1)
         errors = cfg.validate()
         assert any("per second" in e.lower() for e in errors)
 

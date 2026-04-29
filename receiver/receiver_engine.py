@@ -6,11 +6,11 @@ import threading
 import time
 from typing import Any, Callable
 
-from common.enums import ExportFormat
+from common.enums import CaptureMode, ExportFormat
 from common.exceptions import PacketParseError
 from common.metrics import ReceiverMetrics
 from common.schema_models import PacketSchema
-from common.serializer import parse_user_payload
+from common.serializer import compile_schema, parse_payload_compiled, parse_user_payload
 from common.testgen_header import (
     TESTGEN_HEADER_SIZE,
     TESTGEN_MAGIC,
@@ -60,6 +60,8 @@ class ReceiverEngine:
         self.metrics.reset()
 
         expected_payload_bytes = compute_packet_bit_length(schema) // 8
+        # Compile schema once; reused for every packet in the hot path
+        compiled_schema = compile_schema(schema)
 
         # Open exporters
         if config.export_format in (ExportFormat.PCAP, ExportFormat.PCAP_AND_JSON):
@@ -70,6 +72,7 @@ class ReceiverEngine:
             self._json.start(config.json_output_path)  # type: ignore[arg-type]
 
         last_progress = time.monotonic()
+        capture_mode = config.capture_mode
 
         def _handle_packet(pkt: Any) -> None:
             nonlocal last_progress
@@ -89,11 +92,43 @@ class ReceiverEngine:
             frame_bytes = bytes(pkt)
             frame_len = len(frame_bytes)
 
+            # ----------------------------------------------------------------
+            # FAST mode: count + validate only — skip dict building/export
+            # ----------------------------------------------------------------
+            if capture_mode is CaptureMode.FAST:
+                valid = False
+                stream_id: int | None = None
+                sequence: int | None = None
+
+                if self._pcap is not None:
+                    self._pcap.write(pkt)
+
+                try:
+                    raw_after_eth = bytes(pkt.payload) if hasattr(pkt, "payload") else frame_bytes[14:]
+                    if len(raw_after_eth) >= TESTGEN_HEADER_SIZE:
+                        tg = parse_testgen_header(raw_after_eth)
+                        if tg.magic == TESTGEN_MAGIC and tg.version == TESTGEN_VERSION:
+                            stream_id = tg.stream_id
+                            sequence = tg.sequence
+                            valid = True
+                except Exception:
+                    pass
+
+                self.metrics.record_packet(frame_len, rx_ts_ns, valid, stream_id, sequence)
+
+                now = time.monotonic()
+                if on_progress and (now - last_progress) >= progress_interval:
+                    on_progress(self.metrics)
+                    last_progress = now
+                return
+
+            # ----------------------------------------------------------------
+            # EXPORT / DEBUG modes: full parse into a record dict
+            # ----------------------------------------------------------------
             # Write raw PCAP regardless of parse outcome
             if self._pcap is not None:
                 self._pcap.write(pkt)
 
-            # Parse Ethernet layer
             eth_dst = pkt.dst if hasattr(pkt, "dst") else "?"
             eth_src = pkt.src if hasattr(pkt, "src") else "?"
             eth_type = pkt.type if hasattr(pkt, "type") else 0
@@ -113,8 +148,8 @@ class ReceiverEngine:
             }
 
             valid = False
-            stream_id: int | None = None
-            sequence: int | None = None
+            stream_id = None
+            sequence = None
 
             try:
                 raw_after_eth = bytes(pkt.payload) if hasattr(pkt, "payload") else frame_bytes[14:]
@@ -153,7 +188,7 @@ class ReceiverEngine:
                         f"expected {expected_payload_bytes}"
                     )
 
-                parsed = parse_user_payload(schema, user_payload_raw[:expected_payload_bytes])
+                parsed = parse_payload_compiled(compiled_schema, user_payload_raw[:expected_payload_bytes])
                 record["payload"] = parsed
                 record["valid"] = True
                 valid = True
@@ -168,7 +203,8 @@ class ReceiverEngine:
             if self._json is not None:
                 self._json.write(record)
 
-            if on_packet is not None:
+            # In EXPORT mode, skip the per-packet callback to avoid Python overhead
+            if capture_mode is CaptureMode.DEBUG and on_packet is not None:
                 on_packet(record)
 
             now = time.monotonic()

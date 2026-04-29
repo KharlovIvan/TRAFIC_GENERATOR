@@ -39,8 +39,8 @@ class SenderConfig:
             errors.append(
                 f"EtherType must be 0x0000\u20130xFFFF, got 0x{self.ethertype:04X}"
             )
-        if self.packets_per_second < 1:
-            errors.append("Packets per second must be >= 1.")
+        if self.packets_per_second < 0:
+            errors.append("Packets per second must be >= 0 (0 = unlimited rate).")
         if self.packet_count < 0:
             errors.append("Packet count must be >= 0 (0 = unlimited).")
         if self.duration_seconds < 0:

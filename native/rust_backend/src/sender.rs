@@ -12,8 +12,14 @@ use std::time::{Duration, Instant};
 
 use crate::errors::NativeError;
 use crate::serializer::{build_user_payload, FieldDescriptor, FieldValue};
-use crate::testgen::{build_testgen_header, current_timestamp_ns, TESTGEN_HEADER_SIZE};
+use crate::testgen::{build_testgen_header, current_timestamp_ns, TESTGEN_HEADER_SIZE, TESTGEN_MAGIC, TESTGEN_VERSION};
 use crate::transport::FrameTransport;
+
+/// Spin only for the last 200 µs of a wait — sleep the rest.
+const SPIN_THRESHOLD: Duration = Duration::from_micros(200);
+
+/// Number of payloads pre-generated for RANDOM pool mode.
+const POOL_SIZE: usize = 256;
 
 // ---- Shared metrics (lock-free) ----------------------------------------
 
@@ -88,7 +94,115 @@ pub fn build_ethernet_header(
     hdr
 }
 
+// ---- Frame template (pre-allocated, patch-in-place) --------------------
+
+/// A pre-built frame buffer where only sequence and timestamp change per packet.
+///
+/// The full frame (Ethernet + TestGen + UserPayload) is allocated once.
+/// Each call to `stamp` patches the two mutable 8-byte fields in-place —
+/// no Vec allocation happens in the hot loop.
+pub struct FrameTemplate {
+    /// Complete frame bytes: Ethernet(14) + TestGen(28) + UserPayload.
+    pub frame: Vec<u8>,
+    /// Byte offset of the 8-byte sequence number field.
+    pub sequence_offset: usize,
+    /// Byte offset of the 8-byte tx_timestamp_ns field.
+    pub timestamp_offset: usize,
+}
+
+impl FrameTemplate {
+    /// Build the template from the immutable configuration parts.
+    pub fn new(
+        eth_header: &[u8; ETHERNET_HEADER_SIZE],
+        stream_id: u32,
+        user_payload: &[u8],
+    ) -> Self {
+        let payload_len = user_payload.len() as u32;
+        let total = ETHERNET_HEADER_SIZE + TESTGEN_HEADER_SIZE + user_payload.len();
+        let mut frame = Vec::with_capacity(total);
+
+        // Ethernet header
+        frame.extend_from_slice(eth_header);
+
+        // TestGen header — static fields first, then placeholder zeros for the
+        // two mutable fields (sequence and timestamp).
+        let tg_start = frame.len(); // = ETHERNET_HEADER_SIZE
+        frame.extend_from_slice(&TESTGEN_MAGIC.to_be_bytes()); // [0..2]
+        frame.push(TESTGEN_VERSION);                            // [2]
+        frame.push(0u8);                                        // [3] flags
+        frame.extend_from_slice(&stream_id.to_be_bytes());      // [4..8]
+        let sequence_offset = tg_start + 8;
+        frame.extend_from_slice(&0u64.to_be_bytes());           // [8..16]  sequence placeholder
+        let timestamp_offset = tg_start + 16;
+        frame.extend_from_slice(&0u64.to_be_bytes());           // [16..24] timestamp placeholder
+        frame.extend_from_slice(&payload_len.to_be_bytes());    // [24..28]
+
+        // User payload
+        frame.extend_from_slice(user_payload);
+
+        Self { frame, sequence_offset, timestamp_offset }
+    }
+
+    /// Patch sequence and timestamp in-place.  Zero-allocation hot path.
+    #[inline]
+    pub fn stamp(&mut self, sequence: u64, timestamp_ns: u64) {
+        self.frame[self.sequence_offset..self.sequence_offset + 8]
+            .copy_from_slice(&sequence.to_be_bytes());
+        self.frame[self.timestamp_offset..self.timestamp_offset + 8]
+            .copy_from_slice(&timestamp_ns.to_be_bytes());
+    }
+}
+
+// ---- Payload pool for RANDOM mode --------------------------------------
+
+/// A pre-generated pool of random payloads rotated through in the send loop.
+/// Avoids per-packet RNG calls in the hot path.
+struct PayloadPool {
+    payloads: Vec<Vec<u8>>,
+    index: usize,
+}
+
+impl PayloadPool {
+    fn build(payload_len: usize, count: usize) -> Self {
+        let payloads = (0..count)
+            .map(|_| {
+                let mut buf = vec![0u8; payload_len];
+                for b in buf.iter_mut() {
+                    // Simple LCG-quality fill — fast enough for a traffic generator
+                    *b = rand_byte();
+                }
+                buf
+            })
+            .collect();
+        Self { payloads, index: 0 }
+    }
+
+    #[inline]
+    fn next(&mut self) -> &[u8] {
+        let p = &self.payloads[self.index];
+        self.index = (self.index + 1) % self.payloads.len();
+        p
+    }
+}
+
+/// Very cheap pseudo-random byte using a thread-local LCG.
+fn rand_byte() -> u8 {
+    use std::cell::Cell;
+    thread_local! {
+        static STATE: Cell<u64> = Cell::new(0x853c_49e6_748f_ea9b);
+    }
+    STATE.with(|s| {
+        let mut v = s.get();
+        v ^= v << 13;
+        v ^= v >> 7;
+        v ^= v << 17;
+        s.set(v);
+        v as u8
+    })
+}
+
 /// Assemble a complete frame: Ethernet + TestGen + UserPayload.
+/// Kept for use by `prepare_frame`; the hot loop uses `FrameTemplate` instead.
 pub fn build_frame(
     eth_header: &[u8; ETHERNET_HEADER_SIZE],
     stream_id: u32,
@@ -139,12 +253,12 @@ impl SenderConfig {
                 "fields / values length mismatch".into(),
             ));
         }
-        if self.generation_mode == "RANDOM" {
-            return Err(NativeError::Config(
-                "RANDOM generation mode is not yet supported in the native backend. \
-                 Use FIXED mode or switch to the Python backend."
-                    .into(),
-            ));
+        // "RANDOM" is now supported via pool mode; other modes are still rejected
+        if self.generation_mode != "FIXED" && self.generation_mode != "RANDOM" {
+            return Err(NativeError::Config(format!(
+                "Unsupported generation_mode '{}'. Use FIXED or RANDOM.",
+                self.generation_mode
+            )));
         }
         Ok(())
     }
@@ -210,96 +324,128 @@ impl NativeSender {
         self.stop_flag.store(false, Ordering::Relaxed);
         self.running = true;
 
-        // Pre-build immutable parts
-        let user_payload = build_user_payload(&self.config.fields, &self.config.values)?;
+        // Build Ethernet header once
         let eth_header = build_ethernet_header(
             &self.config.dst_mac,
             &self.config.src_mac,
             self.config.ethertype,
         );
 
-        // Open transport
-        self.transport
-            .open(&self.config.interface)
-            .map_err(|e| NativeError::Transport(format!("open: {e}")))?;
+        // Build base user payload (for FIXED mode) or pool (for RANDOM mode)
+        let base_payload = build_user_payload(&self.config.fields, &self.config.values)?;
+        let payload_len = base_payload.len();
 
-        let interval = if self.config.pps > 0 {
-            Duration::from_nanos(1_000_000_000 / self.config.pps)
+        let is_random = self.config.generation_mode == "RANDOM";
+        let mut pool = if is_random {
+            Some(PayloadPool::build(payload_len, POOL_SIZE))
         } else {
-            Duration::ZERO
+            None
         };
 
-        let start = Instant::now();
-        let mut seq: u64 = 0;
-        let unlimited = self.config.packet_count == 0;
-        let has_duration = self.config.duration_sec > 0.0;
-        let duration_limit = Duration::from_secs_f64(self.config.duration_sec);
-        let mut local_sent: u64 = 0;
-        let mut local_failed: u64 = 0;
-        let mut consecutive_failures: u64 = 0;
-        const MAX_CONSECUTIVE_FAILURES: u64 = 50;
+        // Pre-build frame template (avoids per-packet Vec allocation in fixed mode)
+        let mut tmpl = FrameTemplate::new(&eth_header, self.config.stream_id, &base_payload);
 
-        let result = loop {
-            if self.stop_flag.load(Ordering::Relaxed) {
-                break Ok(());
-            }
+        // Open transport (after all allocation so errors are clean)
+        let result = (|| -> Result<(), NativeError> {
+            self.transport
+                .open(&self.config.interface)
+                .map_err(|e| NativeError::Transport(format!("open: {e}")))?;
 
-            // Packet count stop (based on attempts)
-            if !unlimited && seq >= self.config.packet_count {
-                break Ok(());
-            }
+            // pps=0 means unlimited rate (no pacing)
+            let interval = if self.config.pps > 0 {
+                Duration::from_nanos(1_000_000_000 / self.config.pps)
+            } else {
+                Duration::ZERO
+            };
 
-            // Duration stop
-            if has_duration && start.elapsed() >= duration_limit {
-                break Ok(());
-            }
+            let unlimited = self.config.packet_count == 0;
+            let has_duration = self.config.duration_sec > 0.0;
+            let duration_limit = Duration::from_secs_f64(self.config.duration_sec);
 
-            let ts = current_timestamp_ns();
-            let frame = build_frame(&eth_header, self.config.stream_id, seq, ts, &user_payload);
+            let mut local_sent: u64 = 0;
+            let mut local_failed: u64 = 0;
+            let mut consecutive_failures: u64 = 0;
+            const MAX_CONSECUTIVE_FAILURES: u64 = 50;
 
-            // Record attempt
-            self.metrics.packets_attempted.fetch_add(1, Ordering::Relaxed);
+            let mut seq: u64 = 0;
+            // next_send tracks the ideal time for the next packet (avoids u32 overflow)
+            let mut next_send = Instant::now();
+            let start = Instant::now();
 
-            match self.transport.send_frame(&frame) {
-                Ok(n) => {
-                    local_sent += 1;
-                    self.metrics.packets_sent.store(local_sent, Ordering::Relaxed);
-                    self.metrics.bytes_sent.fetch_add(n as u64, Ordering::Relaxed);
-                    if self.metrics.first_tx_timestamp_ns.load(Ordering::Relaxed) == 0 {
-                        self.metrics.first_tx_timestamp_ns.store(ts, Ordering::Relaxed);
-                    }
-                    self.metrics.last_tx_timestamp_ns.store(ts, Ordering::Relaxed);
-                    consecutive_failures = 0;
+            loop {
+                if self.stop_flag.load(Ordering::Relaxed) {
+                    break;
                 }
-                Err(e) => {
-                    local_failed += 1;
-                    self.metrics.packets_failed.store(local_failed, Ordering::Relaxed);
-                    consecutive_failures += 1;
-                    // Rate-limited error logging
-                    if local_failed <= 5 || local_failed % 100 == 0 {
-                        eprintln!("send error at seq {seq}: {e}");
+                if !unlimited && seq >= self.config.packet_count {
+                    break;
+                }
+                if has_duration && start.elapsed() >= duration_limit {
+                    break;
+                }
+
+                let ts = current_timestamp_ns();
+
+                // Stamp the pre-built template or patch a pool payload
+                if let Some(ref mut p) = pool {
+                    let payload = p.next();
+                    // For RANDOM mode, patch the payload section of the template in-place
+                    let payload_start = tmpl.frame.len() - payload_len;
+                    tmpl.frame[payload_start..].copy_from_slice(payload);
+                }
+                tmpl.stamp(seq, ts);
+
+                self.metrics.packets_attempted.fetch_add(1, Ordering::Relaxed);
+
+                match self.transport.send_frame(&tmpl.frame) {
+                    Ok(n) => {
+                        local_sent += 1;
+                        self.metrics.packets_sent.store(local_sent, Ordering::Relaxed);
+                        self.metrics.bytes_sent.fetch_add(n as u64, Ordering::Relaxed);
+                        if self.metrics.first_tx_timestamp_ns.load(Ordering::Relaxed) == 0 {
+                            self.metrics.first_tx_timestamp_ns.store(ts, Ordering::Relaxed);
+                        }
+                        self.metrics.last_tx_timestamp_ns.store(ts, Ordering::Relaxed);
+                        consecutive_failures = 0;
                     }
-                    if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                        break Err(NativeError::Transport(format!(
-                            "Too many consecutive send failures ({MAX_CONSECUTIVE_FAILURES}). Last: {e}"
-                        )));
+                    Err(e) => {
+                        local_failed += 1;
+                        self.metrics.packets_failed.store(local_failed, Ordering::Relaxed);
+                        consecutive_failures += 1;
+                        if local_failed <= 5 || local_failed % 100 == 0 {
+                            eprintln!("send error at seq {seq}: {e}");
+                        }
+                        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                            return Err(NativeError::Transport(format!(
+                                "Too many consecutive send failures ({MAX_CONSECUTIVE_FAILURES}). Last: {e}"
+                            )));
+                        }
+                    }
+                }
+
+                seq += 1;
+
+                // Pacing: sleep for most of the wait, spin only for the tail.
+                // This keeps CPU usage low at moderate rates while staying
+                // accurate at high rates. pps=0 skips pacing entirely.
+                if !interval.is_zero() {
+                    next_send += interval;
+                    let now = Instant::now();
+                    if next_send > now {
+                        let remaining = next_send - now;
+                        if remaining > SPIN_THRESHOLD {
+                            std::thread::sleep(remaining - SPIN_THRESHOLD);
+                        }
+                        while Instant::now() < next_send {
+                            if self.stop_flag.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            std::hint::spin_loop();
+                        }
                     }
                 }
             }
-
-            seq += 1;
-
-            // Rate pacing (based on attempts, not successes)
-            if !interval.is_zero() {
-                let target = start + interval * (seq as u32);
-                while Instant::now() < target {
-                    if self.stop_flag.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    std::hint::spin_loop();
-                }
-            }
-        };
+            Ok(())
+        })();
 
         self.transport.close();
         self.running = false;

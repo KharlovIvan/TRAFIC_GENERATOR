@@ -208,7 +208,7 @@ class TestReceiverEnginePacketParsing:
         assert len(records) == 1
         assert records[0]["valid"] is True
         assert records[0]["testgen_header"]["stream_id"] == 7
-        assert records[0]["payload"]["H1"]["val"] == 100
+        assert records[0]["payload"]["val"] == 100
 
     def test_invalid_magic_counted(self):
         """Bad magic → packet counted as invalid, raw PCAP still ok."""
