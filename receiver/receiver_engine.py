@@ -107,7 +107,12 @@ class ReceiverEngine:
                     raw_after_eth = bytes(pkt.payload) if hasattr(pkt, "payload") else frame_bytes[14:]
                     if len(raw_after_eth) >= TESTGEN_HEADER_SIZE:
                         tg = parse_testgen_header(raw_after_eth)
-                        if tg.magic == TESTGEN_MAGIC and tg.version == TESTGEN_VERSION:
+                        if (
+                            tg.magic == TESTGEN_MAGIC
+                            and tg.version == TESTGEN_VERSION
+                            and tg.payload_len >= expected_payload_bytes
+                            and len(raw_after_eth) >= TESTGEN_HEADER_SIZE + tg.payload_len
+                        ):
                             stream_id = tg.stream_id
                             sequence = tg.sequence
                             valid = True
@@ -188,7 +193,10 @@ class ReceiverEngine:
                         f"expected {expected_payload_bytes}"
                     )
 
-                parsed = parse_payload_compiled(compiled_schema, user_payload_raw[:expected_payload_bytes])
+                if capture_mode is CaptureMode.DEBUG:
+                    parsed = parse_user_payload(schema, user_payload_raw[:expected_payload_bytes])
+                else:
+                    parsed = parse_payload_compiled(compiled_schema, user_payload_raw[:expected_payload_bytes])
                 record["payload"] = parsed
                 record["valid"] = True
                 valid = True

@@ -155,7 +155,7 @@ impl FrameTemplate {
 
 // ---- Payload pool for RANDOM mode --------------------------------------
 
-/// A pre-generated pool of random payloads rotated through in the send loop.
+/// A pre-generated pool of schema-valid random payloads rotated in the send loop.
 /// Avoids per-packet RNG calls in the hot path.
 struct PayloadPool {
     payloads: Vec<Vec<u8>>,
@@ -163,18 +163,12 @@ struct PayloadPool {
 }
 
 impl PayloadPool {
-    fn build(payload_len: usize, count: usize) -> Self {
+    /// Build a pool of `count` schema-valid random payloads from field descriptors.
+    fn build(fields: &[FieldDescriptor], count: usize) -> Result<Self, NativeError> {
         let payloads = (0..count)
-            .map(|_| {
-                let mut buf = vec![0u8; payload_len];
-                for b in buf.iter_mut() {
-                    // Simple LCG-quality fill — fast enough for a traffic generator
-                    *b = rand_byte();
-                }
-                buf
-            })
-            .collect();
-        Self { payloads, index: 0 }
+            .map(|_| build_random_payload(fields))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { payloads, index: 0 })
     }
 
     #[inline]
@@ -183,6 +177,47 @@ impl PayloadPool {
         self.index = (self.index + 1) % self.payloads.len();
         p
     }
+}
+
+/// Generate a single schema-valid random payload respecting each field's type.
+fn build_random_payload(fields: &[FieldDescriptor]) -> Result<Vec<u8>, NativeError> {
+    let mut payload = Vec::new();
+    for desc in fields {
+        let byte_len = desc.bit_length / 8;
+        match desc.field_type.as_str() {
+            "INTEGER" | "RAW_BYTES" => {
+                let mut buf = vec![0u8; byte_len];
+                for b in buf.iter_mut() {
+                    *b = rand_byte();
+                }
+                payload.extend(buf);
+            }
+            "STRING" => {
+                // Printable ASCII (0x20..=0x7E) so the receiver can decode safely
+                let mut buf = Vec::with_capacity(byte_len);
+                for _ in 0..byte_len {
+                    buf.push(0x20 + (rand_byte() % 0x5F)); // 0x20..=0x7E
+                }
+                payload.extend(buf);
+            }
+            "BOOLEAN" => {
+                if byte_len != 1 {
+                    return Err(NativeError::Serialization(format!(
+                        "Field '{}': BOOLEAN must be 8 bits, got {}",
+                        desc.name, desc.bit_length
+                    )));
+                }
+                payload.push(rand_byte() & 1); // 0x00 or 0x01 only
+            }
+            other => {
+                return Err(NativeError::Serialization(format!(
+                    "Unsupported field type '{}' for RANDOM mode field '{}'",
+                    other, desc.name
+                )));
+            }
+        }
+    }
+    Ok(payload)
 }
 
 /// Very cheap pseudo-random byte using a thread-local LCG.
@@ -324,29 +359,30 @@ impl NativeSender {
         self.stop_flag.store(false, Ordering::Relaxed);
         self.running = true;
 
-        // Build Ethernet header once
+        // Build Ethernet header once (outside closure — pure computation, infallible)
         let eth_header = build_ethernet_header(
             &self.config.dst_mac,
             &self.config.src_mac,
             self.config.ethertype,
         );
 
-        // Build base user payload (for FIXED mode) or pool (for RANDOM mode)
-        let base_payload = build_user_payload(&self.config.fields, &self.config.values)?;
-        let payload_len = base_payload.len();
-
-        let is_random = self.config.generation_mode == "RANDOM";
-        let mut pool = if is_random {
-            Some(PayloadPool::build(payload_len, POOL_SIZE))
-        } else {
-            None
-        };
-
-        // Pre-build frame template (avoids per-packet Vec allocation in fixed mode)
-        let mut tmpl = FrameTemplate::new(&eth_header, self.config.stream_id, &base_payload);
-
-        // Open transport (after all allocation so errors are clean)
+        // All fallible setup is inside the closure so self.running is always
+        // reset to false and transport.close() is always called, even on error.
         let result = (|| -> Result<(), NativeError> {
+            // Build base user payload (for FIXED mode) or pool (for RANDOM mode)
+            let base_payload = build_user_payload(&self.config.fields, &self.config.values)?;
+            let payload_len = base_payload.len();
+
+            let is_random = self.config.generation_mode == "RANDOM";
+            let mut pool = if is_random {
+                Some(PayloadPool::build(&self.config.fields, POOL_SIZE)?)
+            } else {
+                None
+            };
+
+            // Pre-build frame template (avoids per-packet Vec allocation in fixed mode)
+            let mut tmpl = FrameTemplate::new(&eth_header, self.config.stream_id, &base_payload);
+
             self.transport
                 .open(&self.config.interface)
                 .map_err(|e| NativeError::Transport(format!("open: {e}")))?;
@@ -577,12 +613,64 @@ mod tests {
     }
 
     #[test]
-    fn test_random_mode_rejected() {
+    fn test_random_mode_pool_runs() {
         let mut config = test_config();
         config.generation_mode = "RANDOM".into();
         let transport = LoopbackTransport::new();
         let mut sender = NativeSender::new(config, Box::new(transport));
-        assert!(sender.run().is_err());
+        let metrics = sender.run().unwrap();
+        assert_eq!(metrics["packets_attempted"], 5);
+        assert_eq!(metrics["packets_sent"], 5);
+        assert_eq!(metrics["packets_failed"], 0);
+    }
+
+    #[test]
+    fn test_run_error_clears_running_state() {
+        let mut config = test_config();
+        // Use an unsupported field type to trigger an error inside the closure
+        config.fields = vec![FieldDescriptor {
+            name: "bad".into(),
+            field_type: "UNSUPPORTED".into(),
+            bit_length: 8,
+        }];
+        config.values = vec![FieldValue::Integer(0)];
+        let transport = LoopbackTransport::new();
+        let mut sender = NativeSender::new(config, Box::new(transport));
+        let result = sender.run();
+        assert!(result.is_err(), "run() must return Err for unsupported field type");
+        assert!(!sender.is_running(), "is_running must be false after run() returns Err");
+    }
+
+    #[test]
+    fn test_random_boolean_payload_is_valid() {
+        let fields = vec![FieldDescriptor {
+            name: "flag".into(),
+            field_type: "BOOLEAN".into(),
+            bit_length: 8,
+        }];
+        let pool = PayloadPool::build(&fields, 256).unwrap();
+        for payload in &pool.payloads {
+            assert_eq!(payload.len(), 1);
+            assert!(
+                payload[0] == 0 || payload[0] == 1,
+                "BOOLEAN payload must be 0x00 or 0x01, got 0x{:02X}",
+                payload[0]
+            );
+        }
+    }
+
+    #[test]
+    fn test_random_mixed_fields_correct_length() {
+        let fields = vec![
+            FieldDescriptor { name: "flag".into(), field_type: "BOOLEAN".into(), bit_length: 8 },
+            FieldDescriptor { name: "val".into(), field_type: "INTEGER".into(), bit_length: 16 },
+            FieldDescriptor { name: "label".into(), field_type: "STRING".into(), bit_length: 32 },
+        ];
+        // 1 + 2 + 4 = 7 bytes
+        let pool = PayloadPool::build(&fields, 4).unwrap();
+        for payload in &pool.payloads {
+            assert_eq!(payload.len(), 7, "mixed payload must be 7 bytes");
+        }
     }
 
     #[test]
