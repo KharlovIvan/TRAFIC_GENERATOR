@@ -297,42 +297,38 @@ def move_header_up(parent: HeaderParent, header_name: str) -> None:
     """Move a top-level or sibling header one position earlier."""
     if isinstance(parent, PacketSchema):
         headers = parent.headers
-    else:
-        # For HeaderSchema, work with the children list (Issue #3)
-        headers = [c for c in parent.children if isinstance(c, HeaderSchema)]
-    
-    idx = _index_of_header(headers, header_name)
-    if idx == 0:
-        raise BuilderOperationError(f"Header '{header_name}' is already first.")
-    
-    # If working with HeaderSchema, find the indices in the children list
-    if isinstance(parent, HeaderSchema):
-        children_idx = parent.children.index(headers[idx])
-        children_idx_prev = parent.children.index(headers[idx - 1])
-        _swap(parent.children, children_idx, children_idx_prev)
-    else:
+        idx = _index_of_header(headers, header_name)
+        if idx == 0:
+            raise BuilderOperationError(f"Header '{header_name}' is already first.")
         _swap(headers, idx, idx - 1)
+        return
+
+    for i, child in enumerate(parent.children):
+        if isinstance(child, HeaderSchema) and child.name == header_name:
+            if i == 0:
+                raise BuilderOperationError(f"Header '{header_name}' is already first.")
+            _swap(parent.children, i, i - 1)
+            return
+    raise BuilderOperationError(f"Header '{header_name}' not found.")
 
 
 def move_header_down(parent: HeaderParent, header_name: str) -> None:
     """Move a top-level or sibling header one position later."""
     if isinstance(parent, PacketSchema):
         headers = parent.headers
-    else:
-        # For HeaderSchema, work with the children list (Issue #3)
-        headers = [c for c in parent.children if isinstance(c, HeaderSchema)]
-    
-    idx = _index_of_header(headers, header_name)
-    if idx == len(headers) - 1:
-        raise BuilderOperationError(f"Header '{header_name}' is already last.")
-    
-    # If working with HeaderSchema, find the indices in the children list
-    if isinstance(parent, HeaderSchema):
-        children_idx = parent.children.index(headers[idx])
-        children_idx_next = parent.children.index(headers[idx + 1])
-        _swap(parent.children, children_idx, children_idx_next)
-    else:
+        idx = _index_of_header(headers, header_name)
+        if idx == len(headers) - 1:
+            raise BuilderOperationError(f"Header '{header_name}' is already last.")
         _swap(headers, idx, idx + 1)
+        return
+
+    for i, child in enumerate(parent.children):
+        if isinstance(child, HeaderSchema) and child.name == header_name:
+            if i == len(parent.children) - 1:
+                raise BuilderOperationError(f"Header '{header_name}' is already last.")
+            _swap(parent.children, i, i + 1)
+            return
+    raise BuilderOperationError(f"Header '{header_name}' not found.")
 
 
 def move_subheader_up(parent_header: HeaderSchema, header_name: str) -> None:
@@ -350,31 +346,29 @@ def move_subheader_down(parent_header: HeaderSchema, header_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 def move_field_up(header: HeaderSchema, field_name: str) -> None:
-    """Move a field one position earlier within its header."""
-    # Extract fields from children and find the field
-    fields = [c for c in header.children if isinstance(c, FieldSchema)]
-    idx = _index_of_field_in_list(fields, field_name)
-    if idx == 0:
-        raise BuilderOperationError(f"Field '{field_name}' is already first.")
-    
-    # Find indices in the children list and swap
-    children_idx = header.children.index(fields[idx])
-    children_idx_prev = header.children.index(fields[idx - 1])
-    _swap(header.children, children_idx, children_idx_prev)
+    """Move a field one child-slot earlier within ``header.children``."""
+    for i, child in enumerate(header.children):
+        if isinstance(child, FieldSchema) and child.name == field_name:
+            if i == 0:
+                raise BuilderOperationError(f"Field '{field_name}' is already first.")
+            _swap(header.children, i, i - 1)
+            return
+    raise BuilderOperationError(
+        f"Field '{field_name}' not found in header '{header.name}'."
+    )
 
 
 def move_field_down(header: HeaderSchema, field_name: str) -> None:
-    """Move a field one position later within its header."""
-    # Extract fields from children and find the field
-    fields = [c for c in header.children if isinstance(c, FieldSchema)]
-    idx = _index_of_field_in_list(fields, field_name)
-    if idx == len(fields) - 1:
-        raise BuilderOperationError(f"Field '{field_name}' is already last.")
-    
-    # Find indices in the children list and swap
-    children_idx = header.children.index(fields[idx])
-    children_idx_next = header.children.index(fields[idx + 1])
-    _swap(header.children, children_idx, children_idx_next)
+    """Move a field one child-slot later within ``header.children``."""
+    for i, child in enumerate(header.children):
+        if isinstance(child, FieldSchema) and child.name == field_name:
+            if i == len(header.children) - 1:
+                raise BuilderOperationError(f"Field '{field_name}' is already last.")
+            _swap(header.children, i, i + 1)
+            return
+    raise BuilderOperationError(
+        f"Field '{field_name}' not found in header '{header.name}'."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -388,19 +382,3 @@ def _index_of_header(headers: list[HeaderSchema], name: str) -> int:
     raise BuilderOperationError(f"Header '{name}' not found.")
 
 
-def _index_of_field(header: HeaderSchema, name: str) -> int:
-    """Find the index of a field in a header's fields list."""
-    for i, f in enumerate(header.fields):
-        if f.name == name:
-            return i
-    raise BuilderOperationError(
-        f"Field '{name}' not found in header '{header.name}'."
-    )
-
-
-def _index_of_field_in_list(fields: list[FieldSchema], name: str) -> int:
-    """Find the index of a field in a given list."""
-    for i, f in enumerate(fields):
-        if f.name == name:
-            return i
-    raise BuilderOperationError(f"Field '{name}' not found.")

@@ -39,6 +39,38 @@ def validate_schema_semantics(schema: PacketSchema) -> list[str]:
     return warnings
 
 
+def validate_unique_field_names_global(schema: PacketSchema) -> list[str]:
+    """Return errors for duplicate field names anywhere in the packet.
+
+    This is stricter than per-header duplicate checks: it enforces global
+    uniqueness across all nested headers. It is required while value maps are
+    keyed by plain field name (``dict[str, Any]``).
+    """
+    errors: list[str] = []
+    seen: dict[str, str] = {}
+
+    def _walk_header(header: HeaderSchema, parent_path: str) -> None:
+        header_path = f"{parent_path} > header '{header.name}'"
+        for child in header.children:
+            if isinstance(child, FieldSchema):
+                field_path = f"{header_path} > field '{child.name}'"
+                first = seen.get(child.name)
+                if first is not None:
+                    errors.append(
+                        f"Field name '{child.name}' is duplicated globally: "
+                        f"{first} and {field_path}."
+                    )
+                else:
+                    seen[child.name] = field_path
+            elif isinstance(child, HeaderSchema):
+                _walk_header(child, header_path)
+
+    for header in schema.headers:
+        _walk_header(header, "packet")
+
+    return errors
+
+
 def validate_schema(schema: PacketSchema) -> list[str]:
     """Return a combined list of structural errors + semantic warnings."""
     return validate_schema_structure(schema) + validate_schema_semantics(schema)
@@ -119,8 +151,8 @@ def _semantic_packet(packet: PacketSchema, warnings: list[str]) -> None:
     # Duplicate header names at top level
     _check_unique_header_names(packet.headers, "packet", warnings)
 
-    # Check for duplicate field names globally (Issue #2)
-    _check_unique_field_names_global(packet, warnings)
+    # Keep global duplicate names visible as semantic warnings.
+    warnings.extend(validate_unique_field_names_global(packet))
 
     for header in packet.headers:
         _semantic_header(header, "packet", warnings)
@@ -190,27 +222,3 @@ def _check_unique_header_names(
         seen.add(h.name)
 
 
-def _check_unique_field_names_global(packet: PacketSchema, warnings: list[str]) -> None:
-    """Check that all field names are globally unique across the entire packet.
-    
-    Issue #2: Serialization uses a flat dict[field_name], so duplicate field names
-    across different headers will cause values to collide.
-    """
-    seen: dict[str, str] = {}  # field_name -> path
-    
-    def _collect_fields(header: HeaderSchema, parent_path: str) -> None:
-        path = f"{parent_path} > header '{header.name}'"
-        for field in header.fields:
-            if field.name in seen:
-                warnings.append(
-                    f"Field name '{field.name}' is not globally unique. "
-                    f"Found at both {seen[field.name]} and {path}. "
-                    f"This will cause serialization errors due to dict key collisions."
-                )
-            else:
-                seen[field.name] = path
-        for sub in header.subheaders:
-            _collect_fields(sub, path)
-    
-    for header in packet.headers:
-        _collect_fields(header, "packet")

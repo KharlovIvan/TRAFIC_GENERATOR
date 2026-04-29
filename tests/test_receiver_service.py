@@ -30,6 +30,18 @@ _SEMANTIC_BAD_XML = """\
 </packet>
 """
 
+_DUP_GLOBAL_FIELD_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<packet name="Test" totalBitLength="16">
+    <header name="H1">
+        <field name="dup" type="INTEGER" bitLength="8" />
+    </header>
+    <header name="H2">
+        <field name="dup" type="INTEGER" bitLength="8" />
+    </header>
+</packet>
+"""
+
 
 def _write_temp_xml(content: str) -> Path:
     f = tempfile.NamedTemporaryFile(suffix=".xml", delete=False, mode="w", encoding="utf-8")
@@ -69,6 +81,12 @@ class TestReceiverServiceLoad:
         svc.load_schema(path)
         warnings = svc.validate_schema_for_receive()
         assert len(warnings) > 0
+
+    def test_load_rejects_duplicate_global_field_names(self):
+        path = _write_temp_xml(_DUP_GLOBAL_FIELD_XML)
+        svc = ReceiverService()
+        with pytest.raises(ReceiverOperationError, match="duplicate field names"):
+            svc.load_schema(path)
 
 
 class TestReceiverServiceStart:

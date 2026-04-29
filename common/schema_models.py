@@ -29,16 +29,18 @@ class FieldSchema:
 class HeaderSchema:
     """Describes a header (logical container) in the packet.
 
-    A header contains an ordered list of fields and optionally an ordered
-    list of nested sub-headers, all stored in 'children' to preserve their
-    original XML order. For backward compatibility, 'fields' and 'subheaders'
-    provide views of the children list filtered by type.
+    A header contains an ordered list of fields and optionally nested
+    sub-headers, all stored in ``children`` to preserve original XML order.
+    For backward compatibility, ``fields`` and ``subheaders`` provide
+    read-only filtered views of ``children``.
 
     Attributes:
         name: Unique name inside the parent container.
         children: Ordered list of fields and sub-headers in XML order.
-        fields: Deprecated - use children instead. Provided for backward compat.
-        subheaders: Deprecated - use children instead. Provided for backward compat.
+        fields: Read-only compatibility view. Mutating the returned list does
+            not update ``children``.
+        subheaders: Read-only compatibility view. Mutating the returned list
+            does not update ``children``.
     """
 
     name: str
@@ -82,12 +84,22 @@ class HeaderSchema:
 
     @property
     def fields(self) -> list[FieldSchema]:
-        """Return all fields in children list (for backward compatibility)."""
+        """Return a read-only compatibility view of fields in ``children``.
+
+        The returned list is a filtered copy. Mutating it does not change the
+        schema. Use ``children`` (or builder model-editor helpers) for
+        structural edits.
+        """
         return [c for c in self.children if isinstance(c, FieldSchema)]
 
     @property
     def subheaders(self) -> list[HeaderSchema]:
-        """Return all sub-headers in children list (for backward compatibility)."""
+        """Return a read-only compatibility view of subheaders in ``children``.
+
+        The returned list is a filtered copy. Mutating it does not change the
+        schema. Use ``children`` (or builder model-editor helpers) for
+        structural edits.
+        """
         return [c for c in self.children if isinstance(c, HeaderSchema)]
 
 

@@ -11,7 +11,11 @@ from common.exceptions import SenderConfigError, SenderOperationError
 from common.metrics import SenderMetrics
 from common.schema_models import PacketSchema
 from common.schema_parser import load_schema_from_file
-from common.schema_validator import validate_schema_semantics, validate_schema_structure
+from common.schema_validator import (
+    validate_schema_semantics,
+    validate_schema_structure,
+    validate_unique_field_names_global,
+)
 from common.serializer import build_default_values_map
 from sender.backends.base import SenderBackend
 from sender.backends.native_backend import NativeSenderBackend
@@ -70,6 +74,13 @@ class SenderService:
                 "Schema structural errors:\n"
                 + "\n".join(f"  - {e}" for e in struct_errors)
             )
+        duplicate_name_errors = validate_unique_field_names_global(schema)
+        if duplicate_name_errors:
+            raise SenderOperationError(
+                "Schema uses duplicate field names across headers, which is "
+                "unsupported while values are keyed by field name:\n"
+                + "\n".join(f"  - {e}" for e in duplicate_name_errors)
+            )
         warnings = validate_schema_semantics(schema)
         self._schema = schema
         self._fixed_values = build_default_values_map(schema)
@@ -90,6 +101,13 @@ class SenderService:
         """Start the sending loop.  Blocks until complete or stopped."""
         if self._schema is None:
             raise SenderOperationError("No schema loaded.")
+        duplicate_name_errors = validate_unique_field_names_global(self._schema)
+        if duplicate_name_errors:
+            raise SenderOperationError(
+                "Schema uses duplicate field names across headers, which is "
+                "unsupported while values are keyed by field name:\n"
+                + "\n".join(f"  - {e}" for e in duplicate_name_errors)
+            )
         errors = config.validate()
         if errors:
             raise SenderConfigError("\n".join(errors))
