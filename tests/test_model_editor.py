@@ -11,6 +11,7 @@ from builder.model_editor import (
     create_empty_packet,
     get_all_fields,
     get_all_headers,
+    move_field_to_end,
     move_field_down,
     move_field_up,
     move_header_down,
@@ -19,6 +20,7 @@ from builder.model_editor import (
     move_subheader_up,
     remove_field,
     remove_header,
+    swap_fields,
     update_field,
     update_header,
     update_packet,
@@ -295,6 +297,75 @@ class TestMoveField:
         assert isinstance(h.children[0], FieldSchema) and h.children[0].name == "A"
         assert isinstance(h.children[1], FieldSchema) and h.children[1].name == "B"
         assert isinstance(h.children[2], HeaderSchema) and h.children[2].name == "X"
+
+
+class TestMixedChildrenReorderHelpers:
+    def _outer(self) -> HeaderSchema:
+        outer = HeaderSchema(name="Outer")
+        add_field(outer, "A", FieldType.INTEGER, 8)
+        add_header(outer, "Inner")
+        add_field(outer, "B", FieldType.INTEGER, 8)
+        add_field(outer, "C", FieldType.INTEGER, 8)
+        return outer
+
+    def test_move_field_up_with_mixed_children(self) -> None:
+        outer = self._outer()
+
+        move_field_up(outer, "B")
+
+        names = [
+            child.name
+            for child in outer.children
+        ]
+        assert names == ["A", "B", "Inner", "C"]
+
+    def test_move_field_down_with_mixed_children(self) -> None:
+        outer = self._outer()
+
+        move_field_down(outer, "A")
+
+        names = [
+            child.name
+            for child in outer.children
+        ]
+        assert names == ["Inner", "A", "B", "C"]
+
+    def test_swap_fields_preserves_non_field_children(self) -> None:
+        outer = self._outer()
+
+        swap_fields(outer, "A", "C")
+
+        names = [
+            child.name
+            for child in outer.children
+        ]
+        assert names == ["C", "Inner", "B", "A"]
+
+    def test_move_field_to_end_after_last_field_slot(self) -> None:
+        outer = HeaderSchema(name="Outer")
+        add_field(outer, "A", FieldType.INTEGER, 8)
+        add_field(outer, "B", FieldType.INTEGER, 8)
+        add_header(outer, "Inner")
+
+        move_field_to_end(outer, "A")
+
+        names = [child.name for child in outer.children]
+        assert names == ["B", "A", "Inner"]
+
+    def test_move_header_up_down_with_mixed_children(self) -> None:
+        outer = HeaderSchema(name="Outer")
+        add_field(outer, "A", FieldType.INTEGER, 8)
+        add_header(outer, "H1")
+        add_field(outer, "B", FieldType.INTEGER, 8)
+        add_header(outer, "H2")
+
+        move_header_up(outer, "H2")
+        names_after_up = [child.name for child in outer.children]
+        assert names_after_up == ["A", "H1", "H2", "B"]
+
+        move_header_down(outer, "H1")
+        names_after_down = [child.name for child in outer.children]
+        assert names_after_down == ["A", "H2", "H1", "B"]
 
 
 class TestQueryHelpers:

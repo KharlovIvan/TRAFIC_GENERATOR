@@ -7,19 +7,15 @@ orchestrates the widget panels and connects GUI events to service calls.
 from __future__ import annotations
 
 import sys
-from typing import Union
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QHBoxLayout,
     QInputDialog,
     QMainWindow,
-    QMenuBar,
     QMessageBox,
     QPlainTextEdit,
-    QPushButton,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -41,7 +37,7 @@ from builder.widgets.property_panel import PropertyPanel
 from builder.widgets.xml_preview_panel import XmlPreviewPanel
 from common.enums import FieldType
 from common.exceptions import BuilderOperationError, SchemaValidationError
-from common.schema_models import HeaderSchema, PacketSchema
+from common.schema_models import FieldSchema, HeaderSchema
 from common.utils import compute_packet_bit_length
 
 
@@ -126,6 +122,8 @@ class BuilderWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.packet_panel.packet_changed.connect(self._on_packet_changed)
         self.header_tree.header_selected.connect(self._on_header_selected)
+        self.header_tree.field_selected.connect(self._on_tree_field_selected)
+        self.header_tree.reorder_failed.connect(self._on_tree_reorder_failed)
         self.header_tree.header_action.connect(self._on_header_action)
         self.field_editor.btn_add.clicked.connect(self._on_add_field)
         self.field_editor.btn_remove.clicked.connect(self._on_remove_field)
@@ -347,7 +345,7 @@ class BuilderWindow(QMainWindow):
     # ------------------------------------------------------- field actions
 
     def _on_add_field(self) -> None:
-        hdr = self.header_tree.selected_header()
+        hdr = self._active_header_for_field_editing()
         if hdr is None:
             QMessageBox.information(self, "Info", "Select a header first.")
             return
@@ -355,18 +353,20 @@ class BuilderWindow(QMainWindow):
         if not ok or not name.strip():
             return
         try:
-            self.service.add_field(hdr, name.strip(), FieldType.INTEGER, 8)
+            new_field = self.service.add_field(hdr, name.strip(), FieldType.INTEGER, 8)
         except BuilderOperationError as exc:
             QMessageBox.warning(self, "Error", str(exc))
             return
+        self.header_tree.select_header(hdr)
         self._refresh_tree()
-        self.field_editor.refresh()
+        self.field_editor.set_header(hdr)
+        self.field_editor.select_field(new_field)
         self._refresh_preview()
         self._refresh_validation()
         self._refresh_total()
 
     def _on_remove_field(self) -> None:
-        hdr = self.header_tree.selected_header()
+        hdr = self._active_header_for_field_editing()
         field = self.field_editor.selected_field()
         if hdr is None or field is None:
             return
@@ -390,7 +390,7 @@ class BuilderWindow(QMainWindow):
         self._refresh_total()
 
     def _on_field_up(self) -> None:
-        hdr = self.header_tree.selected_header()
+        hdr = self._active_header_for_field_editing()
         field = self.field_editor.selected_field()
         if hdr is None or field is None:
             return
@@ -399,14 +399,17 @@ class BuilderWindow(QMainWindow):
         except BuilderOperationError as exc:
             self.statusBar().showMessage(str(exc), 2000)
             return
-        row = self.field_editor.selected_row()
+        moved = field
+        self.header_tree.select_header(hdr)
         self._refresh_tree()
-        self.field_editor.refresh()
-        self.field_editor.table.setCurrentCell(max(0, row - 1), 0)
+        self.field_editor.set_header(hdr)
+        self.field_editor.select_field(moved)
         self._refresh_preview()
+        self._refresh_validation()
+        self._refresh_total()
 
     def _on_field_down(self) -> None:
-        hdr = self.header_tree.selected_header()
+        hdr = self._active_header_for_field_editing()
         field = self.field_editor.selected_field()
         if hdr is None or field is None:
             return
@@ -415,17 +418,18 @@ class BuilderWindow(QMainWindow):
         except BuilderOperationError as exc:
             self.statusBar().showMessage(str(exc), 2000)
             return
-        row = self.field_editor.selected_row()
+        moved = field
+        self.header_tree.select_header(hdr)
         self._refresh_tree()
-        self.field_editor.refresh()
-        self.field_editor.table.setCurrentCell(
-            min(self.field_editor.table.rowCount() - 1, row + 1), 0
-        )
+        self.field_editor.set_header(hdr)
+        self.field_editor.select_field(moved)
         self._refresh_preview()
+        self._refresh_validation()
+        self._refresh_total()
 
     def _on_field_table_changed(self) -> None:
         """Apply inline edits from the field table back to the model."""
-        hdr = self.header_tree.selected_header()
+        hdr = self._active_header_for_field_editing()
         if hdr is None:
             return
         for row_idx in range(self.field_editor.table.rowCount()):
@@ -450,7 +454,7 @@ class BuilderWindow(QMainWindow):
         self._refresh_total()
 
     def _on_field_reordered(self, source_row: int, target_row: int, to_end: bool) -> None:
-        hdr = self.header_tree.selected_header()
+        hdr = self._active_header_for_field_editing()
         if hdr is None:
             return
 
@@ -461,26 +465,33 @@ class BuilderWindow(QMainWindow):
         try:
             if to_end:
                 self.service.move_field_to_end(hdr, src_field.name)
-                new_row = max(0, len(hdr.fields) - 1)
             else:
                 dst_field = self.field_editor.field_at_row(target_row)
                 if dst_field is None or dst_field.name == src_field.name:
                     return
                 self.service.swap_fields(hdr, src_field.name, dst_field.name)
-                new_row = target_row
         except BuilderOperationError as exc:
             self.statusBar().showMessage(str(exc), 3000)
             return
 
+        self.header_tree.select_header(hdr)
         self._refresh_tree()
-        self.field_editor.refresh()
-        if self.field_editor.table.rowCount() > 0:
-            self.field_editor.table.setCurrentCell(
-                min(new_row, self.field_editor.table.rowCount() - 1), 0
-            )
+        self.field_editor.set_header(hdr)
+        self.field_editor.select_field(src_field)
         self._refresh_preview()
         self._refresh_validation()
         self._refresh_total()
+
+    def _active_header_for_field_editing(self) -> HeaderSchema | None:
+        return self.header_tree.selected_header() or self.header_tree.selected_field_parent()
+
+    def _on_tree_field_selected(self, field: FieldSchema | None) -> None:
+        if field is not None:
+            self.property_panel.show_field(field)
+
+    def _on_tree_reorder_failed(self, message: str) -> None:
+        self.validation_area.setPlainText(message)
+        self.statusBar().showMessage("Invalid tree reorder was reverted.", 4000)
 
     def _on_field_selected(self, field) -> None:
         if field is not None:

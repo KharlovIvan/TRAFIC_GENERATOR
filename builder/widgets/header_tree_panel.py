@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
@@ -15,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from common.schema_models import FieldSchema, HeaderSchema, PacketSchema
+from common.schema_validator import validate_schema_structure
 
 
 _HEADER_ROLE = Qt.ItemDataRole.UserRole
@@ -54,6 +57,8 @@ class HeaderTreePanel(QGroupBox):
     """Displays the header/field hierarchy and allows add/remove/reorder."""
 
     header_selected = Signal(object)  # emits HeaderSchema or None
+    field_selected = Signal(object)  # emits FieldSchema or None
+    reorder_failed = Signal(str)
     # action is one of: "add", "remove", "up", "down", "reordered", "rename".
     header_action = Signal(str)
 
@@ -206,7 +211,21 @@ class HeaderTreePanel(QGroupBox):
     def _on_tree_dropped(self) -> None:
         if self._schema is None:
             return
+
+        # Keep a safe copy so invalid drag/drop states can be rolled back.
+        backup = copy.deepcopy(self._schema)
         self._sync_schema_from_tree()
+
+        errors = validate_schema_structure(self._schema)
+        if errors:
+            # Roll back to last valid schema state and restore the tree view.
+            self._schema.headers = backup.headers
+            self._schema.declared_total_bit_length = backup.declared_total_bit_length
+            self._schema.name = backup.name
+            self.refresh()
+            self.reorder_failed.emit("\n".join(errors))
+            return
+
         self._on_selection_changed()
         self.header_action.emit("reordered")
 
@@ -285,9 +304,12 @@ class HeaderTreePanel(QGroupBox):
             item = self.tree.currentItem()
             parent_item = item.parent() if item else None
             parent_header = parent_item.data(0, _HEADER_ROLE) if parent_item else None
-            self.header_selected.emit(parent_header if isinstance(parent_header, HeaderSchema) else None)
+            active_parent = parent_header if isinstance(parent_header, HeaderSchema) else None
+            self.header_selected.emit(active_parent)
+            self.field_selected.emit(selected_field)
         else:
             self.header_selected.emit(selected_header)
+            self.field_selected.emit(None)
 
         has_header_selected = selected_header is not None
         self.btn_remove.setEnabled(has_header_selected)

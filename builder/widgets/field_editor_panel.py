@@ -117,6 +117,7 @@ class FieldEditorPanel(QGroupBox):
             for field in self._header.fields:
                 self._append_field_row(field)
         self._updating = False
+        self._update_reorder_capabilities()
         self._update_buttons()
 
     def selected_field(self) -> FieldSchema | None:
@@ -132,6 +133,15 @@ class FieldEditorPanel(QGroupBox):
         if self._header is None or row < 0 or row >= len(self._header.fields):
             return None
         return self._header.fields[row]
+
+    def select_field(self, field: FieldSchema) -> None:
+        """Select the row corresponding to ``field`` identity when visible."""
+        if self._header is None:
+            return
+        for idx, candidate in enumerate(self._header.fields):
+            if candidate is field:
+                self.table.setCurrentCell(idx, 0)
+                return
 
     # -- Internal ----------------------------------------------------------
 
@@ -189,14 +199,43 @@ class FieldEditorPanel(QGroupBox):
 
     def _update_buttons(self) -> None:
         has_sel = self.table.currentRow() >= 0 and self._header is not None
+        has_subheaders = self._has_subheaders()
         self.btn_remove.setEnabled(has_sel)
-        self.btn_up.setEnabled(has_sel)
-        self.btn_down.setEnabled(has_sel)
+        self.btn_up.setEnabled(has_sel and not has_subheaders)
+        self.btn_down.setEnabled(has_sel and not has_subheaders)
 
     def _on_field_drop_requested(self, source_row: int, target_row: int, to_end: bool) -> None:
-        if self._updating or self._header is None:
+        if self._updating or self._header is None or self._has_subheaders():
             return
         self.field_reordered.emit(source_row, target_row, to_end)
+
+    def _has_subheaders(self) -> bool:
+        if self._header is None:
+            return False
+        return any(isinstance(child, HeaderSchema) for child in self._header.children)
+
+    def _update_reorder_capabilities(self) -> None:
+        unsafe = self._has_subheaders()
+        if unsafe:
+            self.table.setDragEnabled(False)
+            self.table.setAcceptDrops(False)
+            self.table.setDragDropMode(QTableWidget.DragDropMode.NoDragDrop)
+            self.table.setToolTip(
+                "This header contains subheaders. Use the header tree to edit exact XML order."
+            )
+            self.btn_up.setToolTip(
+                "Disabled: this header contains subheaders. Use the header tree for order changes."
+            )
+            self.btn_down.setToolTip(
+                "Disabled: this header contains subheaders. Use the header tree for order changes."
+            )
+        else:
+            self.table.setDragEnabled(True)
+            self.table.setAcceptDrops(True)
+            self.table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
+            self.table.setToolTip("")
+            self.btn_up.setToolTip("")
+            self.btn_down.setToolTip("")
 
     def read_row(self, row: int) -> tuple[str, str, int]:
         """Return (name, type_str, bit_length) from the given table row."""

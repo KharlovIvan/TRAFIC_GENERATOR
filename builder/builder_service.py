@@ -13,11 +13,10 @@ from typing import Union
 from common.enums import FieldType
 from common.exceptions import (
     BuilderOperationError,
-    SchemaParseError,
     SchemaValidationError,
 )
 from common.schema_models import FieldSchema, HeaderSchema, PacketSchema
-from common.schema_validator import validate_schema, validate_schema_semantics
+from common.schema_validator import validate_schema
 from builder import model_editor
 from builder.xml_generator import save_schema_to_file, schema_to_xml_string
 from builder.xml_loader import load_and_validate_schema, load_schema_tolerant
