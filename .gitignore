@@ -18,3 +18,4 @@ env/
 *.swo
 *~
 native/rust_backend/target/
+*.xml

@@ -13,11 +13,10 @@ from typing import Union
 from common.enums import FieldType
 from common.exceptions import (
     BuilderOperationError,
-    SchemaParseError,
     SchemaValidationError,
 )
 from common.schema_models import FieldSchema, HeaderSchema, PacketSchema
-from common.schema_validator import validate_schema, validate_schema_semantics
+from common.schema_validator import validate_schema
 from builder import model_editor
 from builder.xml_generator import save_schema_to_file, schema_to_xml_string
 from builder.xml_loader import load_and_validate_schema, load_schema_tolerant
@@ -169,6 +168,14 @@ class BuilderService:
     def move_field_down(self, header: HeaderSchema, field_name: str) -> None:
         self._require_schema()
         model_editor.move_field_down(header, field_name)
+
+    def swap_fields(self, header: HeaderSchema, first_name: str, second_name: str) -> None:
+        self._require_schema()
+        model_editor.swap_fields(header, first_name, second_name)
+
+    def move_field_to_end(self, header: HeaderSchema, field_name: str) -> None:
+        self._require_schema()
+        model_editor.move_field_to_end(header, field_name)
 
     # -- packet-level updates ---------------------------------------------
 

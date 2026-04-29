@@ -371,6 +371,58 @@ def move_field_down(header: HeaderSchema, field_name: str) -> None:
     )
 
 
+def swap_fields(header: HeaderSchema, first_name: str, second_name: str) -> None:
+    """Swap two fields by name inside ``header.children``."""
+    first_idx: int | None = None
+    second_idx: int | None = None
+    for i, child in enumerate(header.children):
+        if isinstance(child, FieldSchema):
+            if child.name == first_name:
+                first_idx = i
+            elif child.name == second_name:
+                second_idx = i
+
+    if first_idx is None:
+        raise BuilderOperationError(
+            f"Field '{first_name}' not found in header '{header.name}'."
+        )
+    if second_idx is None:
+        raise BuilderOperationError(
+            f"Field '{second_name}' not found in header '{header.name}'."
+        )
+    if first_idx == second_idx:
+        return
+    _swap(header.children, first_idx, second_idx)
+
+
+def move_field_to_end(header: HeaderSchema, field_name: str) -> None:
+    """Move a field to the last field position in ``header.children``."""
+    src_idx: int | None = None
+    field_slots: list[int] = []
+
+    for i, child in enumerate(header.children):
+        if isinstance(child, FieldSchema):
+            field_slots.append(i)
+            if child.name == field_name:
+                src_idx = i
+
+    if src_idx is None:
+        raise BuilderOperationError(
+            f"Field '{field_name}' not found in header '{header.name}'."
+        )
+    if not field_slots:
+        return
+
+    dst_idx = field_slots[-1]
+    if src_idx == dst_idx:
+        return
+
+    node = header.children.pop(src_idx)
+    if src_idx < dst_idx:
+        dst_idx -= 1
+    header.children.insert(dst_idx + 1, node)
+
+
 # ---------------------------------------------------------------------------
 # Internal index helpers
 # ---------------------------------------------------------------------------
