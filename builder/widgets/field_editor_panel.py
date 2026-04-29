@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QDropEvent
+from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -16,11 +17,39 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QAbstractItemView,
+    QAbstractItemView,
 )
 
 from common.constants import BOOLEAN_BIT_LENGTH
 from common.enums import FieldType
 from common.schema_models import FieldSchema, HeaderSchema
+
+
+class FieldTableWidget(QTableWidget):
+    """Field table with deterministic drag/drop semantics."""
+
+    # source_row, target_row, to_end
+    field_drop_requested = Signal(int, int, bool)
+
+    def dropEvent(self, event: QDropEvent) -> None:  # type: ignore[override]
+        source_row = self.currentRow()
+        if source_row < 0:
+            event.ignore()
+            return
+
+        pos = event.position().toPoint()
+        target_row = self.rowAt(pos.y())
+
+        # Drop on free space -> move source field to last position.
+        if target_row < 0:
+            target_row = max(0, self.rowCount() - 1)
+            self.field_drop_requested.emit(source_row, target_row, True)
+            event.acceptProposedAction()
+            return
+
+        # Drop on another field -> swap the two fields.
+        self.field_drop_requested.emit(source_row, target_row, False)
+        event.acceptProposedAction()
 
 
 class FieldTableWidget(QTableWidget):
@@ -57,6 +86,8 @@ class FieldEditorPanel(QGroupBox):
     field_selected = Signal(object)  # FieldSchema or None
     # source_row, target_row, to_end
     field_reordered = Signal(int, int, bool)
+    # source_row, target_row, to_end
+    field_reordered = Signal(int, int, bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Fields", parent)
@@ -71,6 +102,7 @@ class FieldEditorPanel(QGroupBox):
         layout = QVBoxLayout()
 
         self.table = FieldTableWidget(0, 3)
+        self.table = FieldTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Name", "Type", "Bit Length"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(
@@ -78,6 +110,10 @@ class FieldEditorPanel(QGroupBox):
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
         self.table.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
@@ -102,6 +138,7 @@ class FieldEditorPanel(QGroupBox):
     def _connect_signals(self) -> None:
         self.table.currentCellChanged.connect(self._on_selection)
         self.table.cellChanged.connect(self._on_cell_changed)
+        self.table.field_drop_requested.connect(self._on_field_drop_requested)
         self.table.field_drop_requested.connect(self._on_field_drop_requested)
 
     # -- Public API --------------------------------------------------------
