@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from common.enums import ExportFormat
+from common.enums import CaptureMode, ExportFormat
 from common.exceptions import ReceiverConfigError
 
 
@@ -21,6 +21,7 @@ class ReceiverConfig:
     duration_sec: float | None = None
     packet_limit: int | None = None
     promiscuous: bool = True
+    capture_mode: CaptureMode = CaptureMode.DEBUG
 
     def validate(self) -> list[str]:
         """Return list of validation errors (empty = valid)."""

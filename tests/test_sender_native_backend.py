@@ -243,18 +243,19 @@ class TestNativeImportFailure:
 
 
 # ===========================================================================
-# RANDOM mode rejection
+# RANDOM mode is now supported
 # ===========================================================================
 
 
-class TestRandomModeRejection:
-    """Native backend must reject RANDOM mode with a clear error."""
+class TestRandomModeAllowed:
+    """Native backend must pass RANDOM mode through to the Rust backend."""
 
     @patch("sender.backends.native_backend._try_import_native")
-    def test_initialize_random_mode_raises(self, mock_import):
+    def test_initialize_random_mode_succeeds(self, mock_import):
         mod = MagicMock()
+        mod.create_sender.return_value = 12345
         mod.is_transport_available.return_value = True
-        mod.list_interfaces.return_value = []
+        mod.list_interfaces.return_value = [("\\Device\\NPF_eth0", "eth0")]
         mock_import.return_value = (mod, None)
 
         b = NativeSenderBackend()
@@ -262,11 +263,10 @@ class TestRandomModeRejection:
             interface="eth0",
             generation_mode=GenerationMode.RANDOM,
         )
-        with pytest.raises(RuntimeError, match="RANDOM.*not yet supported"):
-            b.initialize(cfg, _simple_schema(), {"val": 42})
+        b.initialize(cfg, _simple_schema(), {"val": 42})
 
-        # create_sender should NOT have been called
-        mod.create_sender.assert_not_called()
+        # create_sender SHOULD be called — RANDOM is handled by the Rust PayloadPool
+        mod.create_sender.assert_called_once()
 
     @patch("sender.backends.native_backend._try_import_native")
     def test_fixed_mode_still_works(self, mock_import):

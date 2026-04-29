@@ -9,7 +9,11 @@ from common.exceptions import ReceiverConfigError, ReceiverOperationError
 from common.metrics import ReceiverMetrics
 from common.schema_models import PacketSchema
 from common.schema_parser import load_schema_from_file
-from common.schema_validator import validate_schema_semantics, validate_schema_structure
+from common.schema_validator import (
+    validate_schema_semantics,
+    validate_schema_structure,
+    validate_unique_field_names_global,
+)
 from common.utils import compute_packet_bit_length, flatten_fields_in_layout_order
 from receiver.receiver_config import ReceiverConfig
 from receiver.receiver_engine import ReceiverEngine
@@ -43,6 +47,13 @@ class ReceiverService:
             raise ReceiverOperationError(
                 "Schema structural errors:\n"
                 + "\n".join(f"  - {e}" for e in struct_errors)
+            )
+        duplicate_name_errors = validate_unique_field_names_global(schema)
+        if duplicate_name_errors:
+            raise ReceiverOperationError(
+                "Schema uses duplicate field names across headers, which is "
+                "unsupported while values are keyed by field name:\n"
+                + "\n".join(f"  - {e}" for e in duplicate_name_errors)
             )
         self._schema = schema
         self._semantic_warnings = validate_schema_semantics(schema)
@@ -80,6 +91,13 @@ class ReceiverService:
         """Start the capture.  Blocks until stop or limit reached."""
         if self._schema is None:
             raise ReceiverOperationError("No schema loaded.")
+        duplicate_name_errors = validate_unique_field_names_global(self._schema)
+        if duplicate_name_errors:
+            raise ReceiverOperationError(
+                "Schema uses duplicate field names across headers, which is "
+                "unsupported while values are keyed by field name:\n"
+                + "\n".join(f"  - {e}" for e in duplicate_name_errors)
+            )
         warnings = self.validate_schema_for_receive()
         if warnings:
             raise ReceiverOperationError(

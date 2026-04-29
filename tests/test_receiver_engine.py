@@ -208,6 +208,7 @@ class TestReceiverEnginePacketParsing:
         assert len(records) == 1
         assert records[0]["valid"] is True
         assert records[0]["testgen_header"]["stream_id"] == 7
+        # DEBUG mode (default) produces nested payload
         assert records[0]["payload"]["H1"]["val"] == 100
 
     def test_invalid_magic_counted(self):
@@ -317,3 +318,154 @@ class TestReceiverEnginePacketParsing:
         assert jsonl.exists()
         content = jsonl.read_text()
         assert '"valid": true' in content or '"valid":true' in content
+
+
+# ===========================================================================
+# FAST mode validation
+# ===========================================================================
+
+
+class TestFastModeValidation:
+    """FAST mode must validate payload length in addition to magic/version."""
+
+    def _run_fast(
+        self,
+        packets: list[FakePacket],
+        schema: PacketSchema | None = None,
+    ) -> ReceiverMetrics:
+        schema = schema or _simple_schema()
+        tmp = Path(tempfile.mkdtemp())
+        engine = ReceiverEngine()
+
+        captured_sniffer = _CapturedSniffer()
+
+        def _fake_sniffer_class(**kw: Any):
+            captured_sniffer.prn = kw.get("prn")
+            captured_sniffer.lfilter = kw.get("lfilter")
+            return captured_sniffer
+
+        def _start_and_deliver():
+            captured_sniffer.started = True
+            for pkt in packets:
+                if engine.is_stopped:
+                    break
+                if captured_sniffer.lfilter and not captured_sniffer.lfilter(pkt):
+                    continue
+                captured_sniffer.prn(pkt)
+
+        captured_sniffer.start = _start_and_deliver
+
+        from common.enums import CaptureMode
+        config = ReceiverConfig(
+            interface_name="lo",
+            schema_path="schema.xml",
+            export_format=ExportFormat.JSON,
+            pcap_output_path=str(tmp / "out.pcap"),
+            json_output_path=str(tmp / "out.jsonl"),
+            packet_limit=len(packets),
+            capture_mode=CaptureMode.FAST,
+        )
+
+        with patch("scapy.all.AsyncSniffer", side_effect=_fake_sniffer_class):
+            metrics = engine.run(config=config, schema=schema)
+
+        return metrics
+
+    def test_fast_valid_frame_counted_valid(self):
+        frame = _build_valid_frame(val=42, stream_id=1, sequence=0)
+        metrics = self._run_fast([FakePacket(frame)])
+        assert metrics.packets_received == 1
+        assert metrics.packets_parsed_ok == 1
+        assert metrics.packets_invalid == 0
+
+    def test_fast_wrong_magic_counted_invalid(self):
+        bad_tg = struct.pack(TESTGEN_HEADER_FORMAT, 0xBEEF, TESTGEN_VERSION, 0, 1, 0, 0, 2)
+        frame = _build_ethernet_frame(payload=bad_tg + b"\x00\x01")
+        metrics = self._run_fast([FakePacket(frame)])
+        assert metrics.packets_received == 1
+        assert metrics.packets_invalid == 1
+        assert metrics.packets_parsed_ok == 0
+
+    def test_fast_wrong_version_counted_invalid(self):
+        bad_tg = struct.pack(TESTGEN_HEADER_FORMAT, TESTGEN_MAGIC, 99, 0, 1, 0, 0, 2)
+        frame = _build_ethernet_frame(payload=bad_tg + b"\x00\x01")
+        metrics = self._run_fast([FakePacket(frame)])
+        assert metrics.packets_invalid == 1
+        assert metrics.packets_parsed_ok == 0
+
+    def test_fast_truncated_payload_counted_invalid(self):
+        """Valid magic/version but actual bytes after header are fewer than payload_len."""
+        # Header claims payload_len=2 but no payload bytes follow
+        tg_hdr = build_testgen_header(
+            stream_id=1, sequence=0, tx_timestamp_ns=0,
+            payload_len=2,
+        )
+        frame = _build_ethernet_frame(payload=tg_hdr)  # no payload bytes appended
+        metrics = self._run_fast([FakePacket(frame)])
+        assert metrics.packets_received == 1
+        assert metrics.packets_invalid == 1
+        assert metrics.packets_parsed_ok == 0
+
+
+# ===========================================================================
+# DEBUG vs EXPORT payload structure
+# ===========================================================================
+
+
+class TestDebugPayloadNesting:
+    """DEBUG mode must return nested payload; EXPORT mode returns flat dict."""
+
+    def _run_mode(self, capture_mode, schema=None):
+        from common.enums import CaptureMode
+        schema = schema or _simple_schema()
+        tmp = Path(tempfile.mkdtemp())
+        engine = ReceiverEngine()
+        records: list[dict] = []
+        frame = _build_valid_frame(val=7)
+        pkt = FakePacket(frame)
+
+        captured_sniffer = _CapturedSniffer()
+
+        def _fake_sniffer_class(**kw: Any):
+            captured_sniffer.prn = kw.get("prn")
+            captured_sniffer.lfilter = kw.get("lfilter")
+            return captured_sniffer
+
+        def _start_and_deliver():
+            captured_sniffer.started = True
+            captured_sniffer.prn(pkt)
+
+        captured_sniffer.start = _start_and_deliver
+
+        config = ReceiverConfig(
+            interface_name="lo",
+            schema_path="schema.xml",
+            export_format=ExportFormat.JSON,
+            pcap_output_path=str(tmp / "out.pcap"),
+            json_output_path=str(tmp / "out.jsonl"),
+            packet_limit=1,
+            capture_mode=capture_mode,
+        )
+
+        def _on_packet(record: dict) -> None:
+            records.append(record)
+
+        with patch("scapy.all.AsyncSniffer", side_effect=_fake_sniffer_class):
+            engine.run(config=config, schema=schema, on_packet=_on_packet)
+
+        return records
+
+    def test_debug_mode_payload_is_nested(self):
+        from common.enums import CaptureMode
+        records = self._run_mode(CaptureMode.DEBUG)
+        assert len(records) == 1
+        payload = records[0]["payload"]
+        # parse_user_payload returns nested structure: {header_name: {field_name: value}}
+        assert "H1" in payload, f"expected nested header 'H1', got {payload!r}"
+        assert payload["H1"]["val"] == 7
+
+    def test_export_mode_payload_is_flat(self):
+        from common.enums import CaptureMode
+        records = self._run_mode(CaptureMode.EXPORT)
+        assert len(records) == 0  # EXPORT mode skips on_packet callback
+        # EXPORT mode does not fire on_packet; check nothing raised

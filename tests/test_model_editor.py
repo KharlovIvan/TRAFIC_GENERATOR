@@ -242,6 +242,19 @@ class TestMoveSubheader:
         move_subheader_down(parent, "S1")
         assert [s.name for s in parent.subheaders] == ["S2", "S1"]
 
+    def test_move_subheader_up_across_field_in_children_order(self) -> None:
+        parent = HeaderSchema(name="P")
+        add_header(parent, "S1")
+        add_field(parent, "F", FieldType.INTEGER, 8)
+        add_header(parent, "S2")
+
+        move_subheader_up(parent, "S2")
+
+        assert [type(c).__name__ for c in parent.children] == ["HeaderSchema", "HeaderSchema", "FieldSchema"]
+        assert isinstance(parent.children[0], HeaderSchema) and parent.children[0].name == "S1"
+        assert isinstance(parent.children[1], HeaderSchema) and parent.children[1].name == "S2"
+        assert isinstance(parent.children[2], FieldSchema) and parent.children[2].name == "F"
+
 
 class TestMoveField:
     def test_move_up(self) -> None:
@@ -269,6 +282,19 @@ class TestMoveField:
         add_field(h, "A", FieldType.INTEGER, 8)
         with pytest.raises(BuilderOperationError, match="already last"):
             move_field_down(h, "A")
+
+    def test_move_up_across_subheader_one_slot(self) -> None:
+        h = HeaderSchema(name="H")
+        add_field(h, "A", FieldType.INTEGER, 8)
+        add_header(h, "X")
+        add_field(h, "B", FieldType.INTEGER, 8)
+
+        move_field_up(h, "B")
+
+        assert [type(c).__name__ for c in h.children] == ["FieldSchema", "FieldSchema", "HeaderSchema"]
+        assert isinstance(h.children[0], FieldSchema) and h.children[0].name == "A"
+        assert isinstance(h.children[1], FieldSchema) and h.children[1].name == "B"
+        assert isinstance(h.children[2], HeaderSchema) and h.children[2].name == "X"
 
 
 class TestQueryHelpers:

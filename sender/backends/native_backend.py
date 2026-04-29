@@ -272,13 +272,6 @@ class NativeSenderBackend(SenderBackend):
         if mod is None:
             raise RuntimeError(f"Native backend is not available: {err}")
 
-        # Reject RANDOM mode early with a clear message
-        if config.generation_mode is GenerationMode.RANDOM:
-            raise RuntimeError(
-                "RANDOM generation mode is not yet supported in the native backend. "
-                "Use FIXED mode or switch to the Python backend."
-            )
-
         # Validate transport availability
         try:
             transport_ok = mod.is_transport_available()  # type: ignore[union-attr]

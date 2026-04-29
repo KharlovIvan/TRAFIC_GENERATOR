@@ -13,6 +13,7 @@ from common.schema_validator import (
     validate_schema_or_raise,
     validate_schema_semantics,
     validate_schema_structure,
+    validate_unique_field_names_global,
 )
 
 
@@ -160,6 +161,21 @@ class TestValidateSchemaSemantics:
             ],
         )
         assert validate_schema_semantics(schema) == []
+
+    def test_validate_unique_field_names_global_reports_paths(self) -> None:
+        schema = PacketSchema(
+            name="P",
+            declared_total_bit_length=16,
+            headers=[
+                HeaderSchema(name="H1", fields=[_make_field("Dup", 8)]),
+                HeaderSchema(name="H2", fields=[_make_field("Dup", 8)]),
+            ],
+        )
+        errors = validate_unique_field_names_global(schema)
+        assert len(errors) == 1
+        assert "duplicated globally" in errors[0]
+        assert "header 'H1'" in errors[0]
+        assert "header 'H2'" in errors[0]
 
 
 # ------------------------------------------------------------------ combined

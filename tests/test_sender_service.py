@@ -24,6 +24,18 @@ _VALID_XML = """\
 </packet>
 """
 
+_DUP_GLOBAL_FIELD_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<packet name="Test" totalBitLength="16">
+    <header name="H1">
+        <field name="dup" type="INTEGER" bitLength="8" />
+    </header>
+    <header name="H2">
+        <field name="dup" type="INTEGER" bitLength="8" />
+    </header>
+</packet>
+"""
+
 
 class _NoopTransport(SenderTransport):
     """Transport that does nothing."""
@@ -71,6 +83,12 @@ class TestSenderServiceLoad:
         svc = SenderService()
         with pytest.raises(SenderOperationError):
             svc.update_fixed_value("x", 0)
+
+    def test_load_rejects_duplicate_global_field_names(self):
+        path = _write_temp_xml(_DUP_GLOBAL_FIELD_XML)
+        svc = SenderService()
+        with pytest.raises(SenderOperationError, match="duplicate field names"):
+            svc.load_schema(path)
 
 
 class TestSenderServiceStart:

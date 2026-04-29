@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from common.constants import BOOLEAN_BIT_LENGTH
@@ -14,6 +15,84 @@ from common.utils import (
     flatten_fields_in_layout_order,
     iter_fields_in_order,
 )
+
+
+# ---------------------------------------------------------------------------
+# Compiled schema — precomputed offsets for fast payload parsing
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CompiledField:
+    """A field descriptor with its precomputed byte offset inside the payload.
+
+    Build once via ``compile_schema``; reuse for every received packet so that
+    parsing avoids repeated schema traversal and dict lookups.
+    """
+
+    name: str
+    field_type: FieldType
+    offset: int   # byte offset from payload start
+    size: int     # byte width
+
+
+def compile_schema(schema: PacketSchema) -> list[CompiledField]:
+    """Compile *schema* into a flat list of ``CompiledField`` with byte offsets.
+
+    The resulting list mirrors the layout order produced by
+    ``flatten_fields_in_layout_order``.  Call this once per schema load and
+    pass the result to ``parse_payload_compiled`` for each received frame.
+    """
+    result: list[CompiledField] = []
+    offset = 0
+    for f in flatten_fields_in_layout_order(schema):
+        size = f.bit_length // 8
+        result.append(CompiledField(name=f.name, field_type=f.type, offset=offset, size=size))
+        offset += size
+    return result
+
+
+def _parse_compiled_field(cf: CompiledField, data: bytes) -> Any:
+    """Parse a single ``CompiledField`` from *data* using its precomputed offset."""
+    chunk = data[cf.offset:cf.offset + cf.size]
+
+    if cf.field_type is FieldType.INTEGER:
+        return int.from_bytes(chunk, "big", signed=False)
+
+    if cf.field_type is FieldType.STRING:
+        return chunk.decode("utf-8", errors="replace").rstrip("\x00")
+
+    if cf.field_type is FieldType.BOOLEAN:
+        if chunk == b"\x00":
+            return False
+        if chunk == b"\x01":
+            return True
+        raise PacketParseError(
+            f"Field '{cf.name}': invalid BOOLEAN byte 0x{chunk[0]:02X}"
+        )
+
+    if cf.field_type is FieldType.RAW_BYTES:
+        return chunk.hex().upper()
+
+    raise PacketParseError(f"Unsupported field type: {cf.field_type}")
+
+
+def parse_payload_compiled(compiled: list[CompiledField], raw: bytes) -> dict[str, Any]:
+    """Parse *raw* payload bytes into a flat field-name dict using precomputed offsets.
+
+    This is faster than ``parse_user_payload`` for repeated calls on the same
+    schema because:
+    * no schema object traversal per call
+    * no repeated byte-offset arithmetic
+    * no nested dict building (returns a flat map)
+
+    For the receiver hot path prefer this over ``parse_user_payload``.
+    """
+    expected = compiled[-1].offset + compiled[-1].size if compiled else 0
+    if len(raw) < expected:
+        raise PacketParseError(
+            f"Payload too short: expected {expected} bytes, got {len(raw)}"
+        )
+    return {cf.name: _parse_compiled_field(cf, raw) for cf in compiled}
 
 
 # ---------------------------------------------------------------------------
@@ -213,18 +292,19 @@ def parse_field(field: FieldSchema, data: bytes) -> Any:
 # ---------------------------------------------------------------------------
 
 def _parse_header(header: HeaderSchema, data: bytes, offset: int) -> tuple[dict[str, object], int]:
-    """Parse a single header and its subheaders from *data* starting at *offset*.
+    """Parse a single header and its children from *data* starting at *offset*.
 
-    Returns (parsed_dict, new_offset).
+    Preserves XML-defined children order (Issue #3).  Returns (parsed_dict, new_offset).
     """
     result: dict[str, object] = {}
-    for f in header.fields:
-        byte_len = f.bit_length // 8
-        result[f.name] = parse_field(f, data[offset:])
-        offset += byte_len
-    for sub in header.subheaders:
-        sub_dict, offset = _parse_header(sub, data, offset)
-        result[sub.name] = sub_dict
+    for child in header.children:
+        if isinstance(child, FieldSchema):
+            byte_len = child.bit_length // 8
+            result[child.name] = parse_field(child, data[offset:])
+            offset += byte_len
+        elif isinstance(child, HeaderSchema):
+            sub_dict, offset = _parse_header(child, data, offset)
+            result[child.name] = sub_dict
     return result, offset
 
 
