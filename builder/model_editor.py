@@ -26,9 +26,15 @@ HeaderParent = Union[PacketSchema, HeaderSchema]
 # ---------------------------------------------------------------------------
 
 def _headers_list(parent: HeaderParent) -> list[HeaderSchema]:
+    """Get the list to which header children should be appended/removed.
+    
+    For PacketSchema, returns headers.
+    For HeaderSchema, returns the sub-headers from the children list.
+    """
     if isinstance(parent, PacketSchema):
         return parent.headers
-    return parent.subheaders
+    # For HeaderSchema, extract subheaders from children (preserves order)
+    return [c for c in parent.children if isinstance(c, HeaderSchema)]
 
 
 def _find_header(parent: HeaderParent, name: str) -> HeaderSchema | None:
@@ -78,11 +84,25 @@ def add_header(parent: HeaderParent, name: str) -> HeaderSchema:
     if not name or not name.strip():
         raise BuilderOperationError("Header name must not be empty.")
     name = name.strip()
-    existing = _headers_list(parent)
-    if any(h.name == name for h in existing):
+    
+    # Get the target list where headers should be added
+    if isinstance(parent, PacketSchema):
+        target_list = parent.headers
+    else:
+        # For HeaderSchema, we need to extract subheaders from children
+        target_list = [c for c in parent.children if isinstance(c, HeaderSchema)]
+    
+    if any(h.name == name for h in target_list):
         raise BuilderOperationError(f"Duplicate header name '{name}'.")
+    
     header = HeaderSchema(name=name)
-    existing.append(header)
+    
+    # Add to the appropriate container
+    if isinstance(parent, PacketSchema):
+        parent.headers.append(header)
+    else:
+        parent.children.append(header)
+    
     return header
 
 
@@ -120,7 +140,8 @@ def add_field(
     field = FieldSchema(
         name=name, type=field_type, bit_length=bit_length, default_value=default_value
     )
-    header.fields.append(field)
+    # Add to children (Issue #3: preserve order)
+    header.children.append(field)
     return field
 
 
@@ -133,11 +154,18 @@ def remove_header(parent: HeaderParent, header_name: str) -> None:
 
     Raises ``BuilderOperationError`` if not found.
     """
-    headers = _headers_list(parent)
-    for i, h in enumerate(headers):
-        if h.name == header_name:
-            headers.pop(i)
-            return
+    if isinstance(parent, PacketSchema):
+        for i, h in enumerate(parent.headers):
+            if h.name == header_name:
+                parent.headers.pop(i)
+                return
+    else:
+        # For HeaderSchema, work with children list (Issue #3)
+        for i, child in enumerate(parent.children):
+            if isinstance(child, HeaderSchema) and child.name == header_name:
+                parent.children.pop(i)
+                return
+    
     raise BuilderOperationError(f"Header '{header_name}' not found.")
 
 
@@ -146,10 +174,12 @@ def remove_field(header: HeaderSchema, field_name: str) -> None:
 
     Raises ``BuilderOperationError`` if not found.
     """
-    for i, f in enumerate(header.fields):
-        if f.name == field_name:
-            header.fields.pop(i)
+    # Work with children list directly (Issue #3)
+    for i, child in enumerate(header.children):
+        if isinstance(child, FieldSchema) and child.name == field_name:
+            header.children.pop(i)
             return
+    
     raise BuilderOperationError(
         f"Field '{field_name}' not found in header '{header.name}'."
     )
@@ -265,20 +295,44 @@ def get_all_headers(packet: PacketSchema) -> list[HeaderSchema]:
 
 def move_header_up(parent: HeaderParent, header_name: str) -> None:
     """Move a top-level or sibling header one position earlier."""
-    headers = _headers_list(parent)
+    if isinstance(parent, PacketSchema):
+        headers = parent.headers
+    else:
+        # For HeaderSchema, work with the children list (Issue #3)
+        headers = [c for c in parent.children if isinstance(c, HeaderSchema)]
+    
     idx = _index_of_header(headers, header_name)
     if idx == 0:
         raise BuilderOperationError(f"Header '{header_name}' is already first.")
-    _swap(headers, idx, idx - 1)
+    
+    # If working with HeaderSchema, find the indices in the children list
+    if isinstance(parent, HeaderSchema):
+        children_idx = parent.children.index(headers[idx])
+        children_idx_prev = parent.children.index(headers[idx - 1])
+        _swap(parent.children, children_idx, children_idx_prev)
+    else:
+        _swap(headers, idx, idx - 1)
 
 
 def move_header_down(parent: HeaderParent, header_name: str) -> None:
     """Move a top-level or sibling header one position later."""
-    headers = _headers_list(parent)
+    if isinstance(parent, PacketSchema):
+        headers = parent.headers
+    else:
+        # For HeaderSchema, work with the children list (Issue #3)
+        headers = [c for c in parent.children if isinstance(c, HeaderSchema)]
+    
     idx = _index_of_header(headers, header_name)
     if idx == len(headers) - 1:
         raise BuilderOperationError(f"Header '{header_name}' is already last.")
-    _swap(headers, idx, idx + 1)
+    
+    # If working with HeaderSchema, find the indices in the children list
+    if isinstance(parent, HeaderSchema):
+        children_idx = parent.children.index(headers[idx])
+        children_idx_next = parent.children.index(headers[idx + 1])
+        _swap(parent.children, children_idx, children_idx_next)
+    else:
+        _swap(headers, idx, idx + 1)
 
 
 def move_subheader_up(parent_header: HeaderSchema, header_name: str) -> None:
@@ -297,18 +351,30 @@ def move_subheader_down(parent_header: HeaderSchema, header_name: str) -> None:
 
 def move_field_up(header: HeaderSchema, field_name: str) -> None:
     """Move a field one position earlier within its header."""
-    idx = _index_of_field(header, field_name)
+    # Extract fields from children and find the field
+    fields = [c for c in header.children if isinstance(c, FieldSchema)]
+    idx = _index_of_field_in_list(fields, field_name)
     if idx == 0:
         raise BuilderOperationError(f"Field '{field_name}' is already first.")
-    _swap(header.fields, idx, idx - 1)
+    
+    # Find indices in the children list and swap
+    children_idx = header.children.index(fields[idx])
+    children_idx_prev = header.children.index(fields[idx - 1])
+    _swap(header.children, children_idx, children_idx_prev)
 
 
 def move_field_down(header: HeaderSchema, field_name: str) -> None:
     """Move a field one position later within its header."""
-    idx = _index_of_field(header, field_name)
-    if idx == len(header.fields) - 1:
+    # Extract fields from children and find the field
+    fields = [c for c in header.children if isinstance(c, FieldSchema)]
+    idx = _index_of_field_in_list(fields, field_name)
+    if idx == len(fields) - 1:
         raise BuilderOperationError(f"Field '{field_name}' is already last.")
-    _swap(header.fields, idx, idx + 1)
+    
+    # Find indices in the children list and swap
+    children_idx = header.children.index(fields[idx])
+    children_idx_next = header.children.index(fields[idx + 1])
+    _swap(header.children, children_idx, children_idx_next)
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +389,18 @@ def _index_of_header(headers: list[HeaderSchema], name: str) -> int:
 
 
 def _index_of_field(header: HeaderSchema, name: str) -> int:
+    """Find the index of a field in a header's fields list."""
     for i, f in enumerate(header.fields):
         if f.name == name:
             return i
     raise BuilderOperationError(
         f"Field '{name}' not found in header '{header.name}'."
     )
+
+
+def _index_of_field_in_list(fields: list[FieldSchema], name: str) -> int:
+    """Find the index of a field in a given list."""
+    for i, f in enumerate(fields):
+        if f.name == name:
+            return i
+    raise BuilderOperationError(f"Field '{name}' not found.")

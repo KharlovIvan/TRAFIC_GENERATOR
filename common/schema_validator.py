@@ -86,11 +86,12 @@ def _structural_header(header: HeaderSchema, parent_path: str, errors: list[str]
     if not header.name or not header.name.strip():
         errors.append(f"Header name must not be empty (inside {parent_path}).")
 
-    for field in header.fields:
-        _structural_field(field, path, errors)
-
-    for sub in header.subheaders:
-        _structural_header(sub, path, errors)
+    # Use children list to preserve XML order (Issue #3)
+    for child in header.children:
+        if isinstance(child, FieldSchema):
+            _structural_field(child, path, errors)
+        elif isinstance(child, HeaderSchema):
+            _structural_header(child, path, errors)
 
 
 def _structural_field(field: FieldSchema, parent_path: str, errors: list[str]) -> None:
@@ -118,6 +119,9 @@ def _semantic_packet(packet: PacketSchema, warnings: list[str]) -> None:
     # Duplicate header names at top level
     _check_unique_header_names(packet.headers, "packet", warnings)
 
+    # Check for duplicate field names globally (Issue #2)
+    _check_unique_field_names_global(packet, warnings)
+
     for header in packet.headers:
         _semantic_header(header, "packet", warnings)
 
@@ -133,14 +137,19 @@ def _semantic_packet(packet: PacketSchema, warnings: list[str]) -> None:
 def _semantic_header(header: HeaderSchema, parent_path: str, warnings: list[str]) -> None:
     path = f"{parent_path} > header '{header.name}'"
 
-    _check_unique_field_names(header.fields, path, warnings)
-    _check_unique_header_names(header.subheaders, path, warnings)
+    # Extract fields and subheaders from children
+    fields = [c for c in header.children if isinstance(c, FieldSchema)]
+    subheaders = [c for c in header.children if isinstance(c, HeaderSchema)]
+    
+    _check_unique_field_names(fields, path, warnings)
+    _check_unique_header_names(subheaders, path, warnings)
 
-    for field in header.fields:
-        _semantic_field(field, path, warnings)
-
-    for sub in header.subheaders:
-        _semantic_header(sub, path, warnings)
+    # Iterate through children in order (Issue #3)
+    for child in header.children:
+        if isinstance(child, FieldSchema):
+            _semantic_field(child, path, warnings)
+        elif isinstance(child, HeaderSchema):
+            _semantic_header(child, path, warnings)
 
 
 def _semantic_field(field: FieldSchema, parent_path: str, warnings: list[str]) -> None:
@@ -179,3 +188,29 @@ def _check_unique_header_names(
                 f"Duplicate header name '{h.name}' inside {parent_path}."
             )
         seen.add(h.name)
+
+
+def _check_unique_field_names_global(packet: PacketSchema, warnings: list[str]) -> None:
+    """Check that all field names are globally unique across the entire packet.
+    
+    Issue #2: Serialization uses a flat dict[field_name], so duplicate field names
+    across different headers will cause values to collide.
+    """
+    seen: dict[str, str] = {}  # field_name -> path
+    
+    def _collect_fields(header: HeaderSchema, parent_path: str) -> None:
+        path = f"{parent_path} > header '{header.name}'"
+        for field in header.fields:
+            if field.name in seen:
+                warnings.append(
+                    f"Field name '{field.name}' is not globally unique. "
+                    f"Found at both {seen[field.name]} and {path}. "
+                    f"This will cause serialization errors due to dict key collisions."
+                )
+            else:
+                seen[field.name] = path
+        for sub in header.subheaders:
+            _collect_fields(sub, path)
+    
+    for header in packet.headers:
+        _collect_fields(header, "packet")

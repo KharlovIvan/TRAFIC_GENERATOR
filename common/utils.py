@@ -55,11 +55,15 @@ def pretty_print_xml(xml_text: str, indent: str = "    ") -> str:
 
 def iter_fields_in_order(header: HeaderSchema) -> Generator[FieldSchema, None, None]:
     """Yield every field inside *header* (including nested sub-headers) in
-    sequential layout order (depth-first, preserving element order)."""
-    for field in header.fields:
-        yield field
-    for sub in header.subheaders:
-        yield from iter_fields_in_order(sub)
+    sequential layout order (depth-first, preserving original XML element order).
+    
+    Uses the children list to preserve XML order (Issue #3).
+    """
+    for child in header.children:
+        if isinstance(child, FieldSchema):
+            yield child
+        elif isinstance(child, HeaderSchema):
+            yield from iter_fields_in_order(child)
 
 
 def iter_all_fields(packet: PacketSchema) -> Generator[FieldSchema, None, None]:
@@ -71,8 +75,9 @@ def iter_all_fields(packet: PacketSchema) -> Generator[FieldSchema, None, None]:
 def iter_headers_recursive(header: HeaderSchema) -> Generator[HeaderSchema, None, None]:
     """Yield *header* itself and then recurse into sub-headers depth-first."""
     yield header
-    for sub in header.subheaders:
-        yield from iter_headers_recursive(sub)
+    for child in header.children:
+        if isinstance(child, HeaderSchema):
+            yield from iter_headers_recursive(child)
 
 
 def iter_all_headers(packet: PacketSchema) -> Generator[HeaderSchema, None, None]:
@@ -83,9 +88,12 @@ def iter_all_headers(packet: PacketSchema) -> Generator[HeaderSchema, None, None
 
 def compute_header_bit_length(header: HeaderSchema) -> int:
     """Return the total bit length of a header (fields + nested sub-headers)."""
-    total = sum(f.bit_length for f in header.fields)
-    for sub in header.subheaders:
-        total += compute_header_bit_length(sub)
+    total = 0
+    for child in header.children:
+        if isinstance(child, FieldSchema):
+            total += child.bit_length
+        elif isinstance(child, HeaderSchema):
+            total += compute_header_bit_length(child)
     return total
 
 

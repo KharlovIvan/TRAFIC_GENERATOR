@@ -41,10 +41,12 @@ def _build_field_element(field: FieldSchema) -> ET.Element:
 
 def _build_header_element(header: HeaderSchema) -> ET.Element:
     elem = ET.Element(XML_TAG_HEADER, {XML_ATTR_NAME: header.name})
-    for field in header.fields:
-        elem.append(_build_field_element(field))
-    for sub in header.subheaders:
-        elem.append(_build_header_element(sub))
+    # Preserve XML order by iterating through children (Issue #3)
+    for child in header.children:
+        if isinstance(child, FieldSchema):
+            elem.append(_build_field_element(child))
+        elif isinstance(child, HeaderSchema):
+            elem.append(_build_header_element(child))
     return elem
 
 

@@ -106,20 +106,20 @@ def _parse_header(element: ET.Element) -> HeaderSchema:
     _check_unknown_attrs(element, ALLOWED_HEADER_ATTRS)
 
     name = _require_attr(element, XML_ATTR_NAME)
-    fields: list[FieldSchema] = []
-    subheaders: list[HeaderSchema] = []
+    children: list = []
 
+    # Preserve XML order by processing children sequentially
     for child in element:
         if child.tag not in ALLOWED_HEADER_CHILDREN:
             raise SchemaParseError(
                 f"Unexpected element <{child.tag}> inside <header name='{name}'>"
             )
         if child.tag == XML_TAG_FIELD:
-            fields.append(_parse_field(child))
+            children.append(_parse_field(child))
         elif child.tag == XML_TAG_HEADER:
-            subheaders.append(_parse_header(child))
+            children.append(_parse_header(child))
 
-    return HeaderSchema(name=name, fields=fields, subheaders=subheaders)
+    return HeaderSchema(name=name, children=children)
 
 
 # ---------------------------------------------------------------------------
