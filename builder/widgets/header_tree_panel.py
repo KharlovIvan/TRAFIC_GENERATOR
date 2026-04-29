@@ -6,7 +6,6 @@ import copy
 
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
@@ -52,40 +51,9 @@ class HeaderTreeWidget(QTreeWidget):
     def dropEvent(self, event) -> None:  # type: ignore[override]
         super().dropEvent(event)
         self.dropped.emit()
-_FIELD_ROLE = Qt.ItemDataRole.UserRole + 1
-
-
-class HeaderTreeWidget(QTreeWidget):
-    """Tree widget that emits a signal after a successful internal drop."""
-
-    dropped = Signal()
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:  # type: ignore[override]
-        item = self.itemAt(event.position().toPoint())
-
-        # Right-click deselection feature: clear current selection quickly.
-        if event.button() == Qt.MouseButton.RightButton:
-            self.clearSelection()
-            self.setCurrentItem(None)
-            event.accept()
-            return
-
-        # Left-click on empty area should deselect active header.
-        if event.button() == Qt.MouseButton.LeftButton and item is None:
-            self.clearSelection()
-            self.setCurrentItem(None)
-            event.accept()
-            return
-
-        super().mousePressEvent(event)
-
-    def dropEvent(self, event) -> None:  # type: ignore[override]
-        super().dropEvent(event)
-        self.dropped.emit()
 
 
 class HeaderTreePanel(QGroupBox):
-    """Displays the header/field hierarchy and allows add/remove/reorder."""
     """Displays the header/field hierarchy and allows add/remove/reorder."""
 
     header_selected = Signal(object)  # emits HeaderSchema or None
@@ -105,7 +73,6 @@ class HeaderTreePanel(QGroupBox):
     def _build_ui(self) -> None:
         layout = QVBoxLayout()
 
-        self.tree = HeaderTreeWidget()
         self.tree = HeaderTreeWidget()
         self.tree.setHeaderLabels(["Header Name"])
         self.tree.setColumnCount(1)
@@ -130,8 +97,6 @@ class HeaderTreePanel(QGroupBox):
         self.tree.currentItemChanged.connect(self._on_selection_changed)
         self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self.tree.dropped.connect(self._on_tree_dropped)
-        self.tree.itemDoubleClicked.connect(self._on_item_double_clicked)
-        self.tree.dropped.connect(self._on_tree_dropped)
         self.btn_add.clicked.connect(lambda: self.header_action.emit("add"))
         self.btn_remove.clicked.connect(lambda: self.header_action.emit("remove"))
         self.btn_up.clicked.connect(lambda: self.header_action.emit("up"))
@@ -144,9 +109,6 @@ class HeaderTreePanel(QGroupBox):
         self.refresh()
 
     def refresh(self) -> None:
-        selected_header = self.selected_header()
-        selected_field = self.selected_field()
-
         selected_header = self.selected_header()
         selected_field = self.selected_field()
 
@@ -166,29 +128,7 @@ class HeaderTreePanel(QGroupBox):
             if item is not None:
                 self.tree.setCurrentItem(item)
 
-
-        if selected_field is not None:
-            item = self._find_item_for_field(selected_field)
-            if item is not None:
-                self.tree.setCurrentItem(item)
-        elif selected_header is not None:
-            item = self._find_item_for_header(selected_header)
-            if item is not None:
-                self.tree.setCurrentItem(item)
-
         self.tree.blockSignals(False)
-        self._on_selection_changed()
-
-    def select_header(self, header: HeaderSchema | None) -> None:
-        if header is None:
-            self.tree.clearSelection()
-            self.tree.setCurrentItem(None)
-            self._on_selection_changed()
-            return
-        item = self._find_item_for_header(header)
-        if item is not None:
-            self.tree.setCurrentItem(item)
-            self._on_selection_changed()
         self._on_selection_changed()
 
     def select_header(self, header: HeaderSchema | None) -> None:
@@ -215,15 +155,6 @@ class HeaderTreePanel(QGroupBox):
             return None
         field = item.data(0, _FIELD_ROLE)
         return field if isinstance(field, FieldSchema) else None
-        header = item.data(0, _HEADER_ROLE)
-        return header if isinstance(header, HeaderSchema) else None
-
-    def selected_field(self) -> FieldSchema | None:
-        item = self.tree.currentItem()
-        if item is None:
-            return None
-        field = item.data(0, _FIELD_ROLE)
-        return field if isinstance(field, FieldSchema) else None
 
     def selected_parent(self) -> PacketSchema | HeaderSchema | None:
         """Return the parent container of the selected header."""
@@ -232,24 +163,10 @@ class HeaderTreePanel(QGroupBox):
             return self._schema
         if self.selected_header() is None:
             return None
-        if self.selected_header() is None:
-            return None
         parent_item = item.parent()
         if parent_item is None:
             return self._schema
         return parent_item.data(0, _HEADER_ROLE)
-
-    def selected_field_parent(self) -> HeaderSchema | None:
-        item = self.tree.currentItem()
-        if item is None:
-            return None
-        if self.selected_field() is None:
-            return None
-        parent_item = item.parent()
-        if parent_item is None:
-            return None
-        parent = parent_item.data(0, _HEADER_ROLE)
-        return parent if isinstance(parent, HeaderSchema) else None
 
     def selected_field_parent(self) -> HeaderSchema | None:
         item = self.tree.currentItem()
@@ -273,22 +190,6 @@ class HeaderTreePanel(QGroupBox):
         else:
             item = QTreeWidgetItem(parent_item, [header.name])
         item.setData(0, _HEADER_ROLE, header)
-        item.setFlags(
-            Qt.ItemFlag.ItemIsEnabled
-            | Qt.ItemFlag.ItemIsSelectable
-            | Qt.ItemFlag.ItemIsDragEnabled
-            | Qt.ItemFlag.ItemIsDropEnabled
-        )
-
-        for child in header.children:
-            if isinstance(child, HeaderSchema):
-                self._add_header_item(item, child)
-            elif isinstance(child, FieldSchema):
-                field_item = QTreeWidgetItem(item, [child.name])
-                field_item.setData(0, _FIELD_ROLE, child)
-                field_item.setFlags(
-                    Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable
-                )
         item.setFlags(
             Qt.ItemFlag.ItemIsEnabled
             | Qt.ItemFlag.ItemIsSelectable

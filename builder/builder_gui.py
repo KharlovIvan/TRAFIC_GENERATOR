@@ -132,7 +132,6 @@ class BuilderWindow(QMainWindow):
         self.field_editor.field_changed.connect(self._on_field_table_changed)
         self.field_editor.field_selected.connect(self._on_field_selected)
         self.field_editor.field_reordered.connect(self._on_field_reordered)
-        self.field_editor.field_reordered.connect(self._on_field_reordered)
 
     # --------------------------------------------------------- file actions
 
@@ -230,18 +229,12 @@ class BuilderWindow(QMainWindow):
         schema = self.service.schema
         assert schema is not None
         new_header: HeaderSchema | None = None
-        new_header: HeaderSchema | None = None
 
         if action == "add":
             name, ok = QInputDialog.getText(self, "Add Header", "Header name:")
             if not ok or not name.strip():
                 return
             try:
-                selected = self.header_tree.selected_header()
-                if selected is None:
-                    new_header = self.service.add_header(schema, name.strip())
-                else:
-                    new_header = self.service.add_subheader(selected, name.strip())
                 selected = self.header_tree.selected_header()
                 if selected is None:
                     new_header = self.service.add_header(schema, name.strip())
@@ -333,50 +326,7 @@ class BuilderWindow(QMainWindow):
             else:
                 return
 
-        elif action == "reordered":
-            self._refresh_preview()
-            self._refresh_validation()
-            self._refresh_total()
-            return
-
-        elif action == "rename":
-            selected_header = self.header_tree.selected_header()
-            selected_field = self.header_tree.selected_field()
-
-            if selected_header is not None:
-                parent = self.header_tree.selected_parent()
-                if parent is None:
-                    return
-                name, ok = QInputDialog.getText(
-                    self, "Rename Header", "Header name:", text=selected_header.name
-                )
-                if not ok or not name.strip():
-                    return
-                try:
-                    self.service.update_header(parent, selected_header, name=name.strip())
-                except BuilderOperationError as exc:
-                    QMessageBox.warning(self, "Error", str(exc))
-                    return
-            elif selected_field is not None:
-                parent_header = self.header_tree.selected_field_parent()
-                if parent_header is None:
-                    return
-                name, ok = QInputDialog.getText(
-                    self, "Rename Field", "Field name:", text=selected_field.name
-                )
-                if not ok or not name.strip():
-                    return
-                try:
-                    self.service.update_field(parent_header, selected_field, name=name.strip())
-                except BuilderOperationError as exc:
-                    QMessageBox.warning(self, "Error", str(exc))
-                    return
-            else:
-                return
-
         self._refresh_tree()
-        if new_header is not None:
-            self.header_tree.select_header(new_header)
         if new_header is not None:
             self.header_tree.select_header(new_header)
         self._refresh_preview()
@@ -407,13 +357,7 @@ class BuilderWindow(QMainWindow):
         except BuilderOperationError as exc:
             QMessageBox.warning(self, "Error", str(exc))
             return
-        self.header_tree.select_header(hdr)
-        self._refresh_tree()
-        self.field_editor.set_header(hdr)
-        self.field_editor.select_field(new_field)
-        self._refresh_preview()
-        self._refresh_validation()
-        self._refresh_total()
+        self._apply_field_change(hdr, new_field)
 
     def _on_remove_field(self) -> None:
         hdr = self._active_header_for_field_editing()
@@ -434,49 +378,31 @@ class BuilderWindow(QMainWindow):
             QMessageBox.warning(self, "Error", str(exc))
             return
         self._refresh_tree()
-        self._refresh_tree()
         self.field_editor.refresh()
         self._refresh_preview()
         self._refresh_validation()
         self._refresh_total()
 
     def _on_field_up(self) -> None:
-        hdr = self._active_header_for_field_editing()
-        field = self.field_editor.selected_field()
-        if hdr is None or field is None:
-            return
-        try:
-            self.service.move_field_up(hdr, field.name)
-        except BuilderOperationError as exc:
-            self.statusBar().showMessage(str(exc), 2000)
-            return
-        moved = field
-        self.header_tree.select_header(hdr)
-        self._refresh_tree()
-        self.field_editor.set_header(hdr)
-        self.field_editor.select_field(moved)
-        self._refresh_preview()
-        self._refresh_validation()
-        self._refresh_total()
+        self._move_field(up=True)
 
     def _on_field_down(self) -> None:
+        self._move_field(up=False)
+
+    def _move_field(self, *, up: bool) -> None:
         hdr = self._active_header_for_field_editing()
         field = self.field_editor.selected_field()
         if hdr is None or field is None:
             return
         try:
-            self.service.move_field_down(hdr, field.name)
+            if up:
+                self.service.move_field_up(hdr, field.name)
+            else:
+                self.service.move_field_down(hdr, field.name)
         except BuilderOperationError as exc:
             self.statusBar().showMessage(str(exc), 2000)
             return
-        moved = field
-        self.header_tree.select_header(hdr)
-        self._refresh_tree()
-        self.field_editor.set_header(hdr)
-        self.field_editor.select_field(moved)
-        self._refresh_preview()
-        self._refresh_validation()
-        self._refresh_total()
+        self._apply_field_change(hdr, field)
 
     def _on_field_table_changed(self) -> None:
         """Apply inline edits from the field table back to the model."""
@@ -525,10 +451,14 @@ class BuilderWindow(QMainWindow):
             self.statusBar().showMessage(str(exc), 3000)
             return
 
+        self._apply_field_change(hdr, src_field)
+
+    def _apply_field_change(self, hdr: HeaderSchema, field_to_select: FieldSchema | None = None) -> None:
         self.header_tree.select_header(hdr)
         self._refresh_tree()
         self.field_editor.set_header(hdr)
-        self.field_editor.select_field(src_field)
+        if field_to_select is not None:
+            self.field_editor.select_field(field_to_select)
         self._refresh_preview()
         self._refresh_validation()
         self._refresh_total()
@@ -547,15 +477,6 @@ class BuilderWindow(QMainWindow):
     def _on_field_selected(self, field) -> None:
         if field is not None:
             self.property_panel.show_field(field)
-            return
-
-        header = self.header_tree.selected_header()
-        if header is not None:
-            self.property_panel.show_header(header)
-        elif self.service.has_schema:
-            self._show_packet_properties()
-        else:
-            self.property_panel.clear()
             return
 
         header = self.header_tree.selected_header()
@@ -591,7 +512,6 @@ class BuilderWindow(QMainWindow):
     def _refresh_total(self) -> None:
         if self.service.has_schema:
             computed = compute_packet_bit_length(self.service.schema)  # type: ignore[arg-type]
-            self.service.schema.declared_total_bit_length = computed  # type: ignore[union-attr]
             self.service.schema.declared_total_bit_length = computed  # type: ignore[union-attr]
             self.packet_panel.update_total(computed)
 
