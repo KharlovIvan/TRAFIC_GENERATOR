@@ -170,6 +170,14 @@ class BuilderService:
         self._require_schema()
         model_editor.move_field_down(header, field_name)
 
+    def swap_fields(self, header: HeaderSchema, first_name: str, second_name: str) -> None:
+        self._require_schema()
+        model_editor.swap_fields(header, first_name, second_name)
+
+    def move_field_to_end(self, header: HeaderSchema, field_name: str) -> None:
+        self._require_schema()
+        model_editor.move_field_to_end(header, field_name)
+
     # -- packet-level updates ---------------------------------------------
 
     def update_packet(
