@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Signal, Qt
+from PySide6.QtGui import QDropEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QGroupBox,
@@ -14,6 +15,7 @@ from PySide6.QtWidgets import (
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
+    QAbstractItemView,
 )
 
 from common.constants import BOOLEAN_BIT_LENGTH
@@ -21,11 +23,40 @@ from common.enums import FieldType
 from common.schema_models import FieldSchema, HeaderSchema
 
 
+class FieldTableWidget(QTableWidget):
+    """Field table with deterministic drag/drop semantics."""
+
+    # source_row, target_row, to_end
+    field_drop_requested = Signal(int, int, bool)
+
+    def dropEvent(self, event: QDropEvent) -> None:  # type: ignore[override]
+        source_row = self.currentRow()
+        if source_row < 0:
+            event.ignore()
+            return
+
+        pos = event.position().toPoint()
+        target_row = self.rowAt(pos.y())
+
+        # Drop on free space -> move source field to last position.
+        if target_row < 0:
+            target_row = max(0, self.rowCount() - 1)
+            self.field_drop_requested.emit(source_row, target_row, True)
+            event.acceptProposedAction()
+            return
+
+        # Drop on another field -> swap the two fields.
+        self.field_drop_requested.emit(source_row, target_row, False)
+        event.acceptProposedAction()
+
+
 class FieldEditorPanel(QGroupBox):
     """Displays and edits the fields of a single header."""
 
     field_changed = Signal()  # any field was added/removed/edited
     field_selected = Signal(object)  # FieldSchema or None
+    # source_row, target_row, to_end
+    field_reordered = Signal(int, int, bool)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__("Fields", parent)
@@ -39,7 +70,7 @@ class FieldEditorPanel(QGroupBox):
     def _build_ui(self) -> None:
         layout = QVBoxLayout()
 
-        self.table = QTableWidget(0, 3)
+        self.table = FieldTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Name", "Type", "Bit Length"])
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.horizontalHeader().setSectionResizeMode(
@@ -47,6 +78,10 @@ class FieldEditorPanel(QGroupBox):
         )
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
         self.table.setDragDropMode(QTableWidget.DragDropMode.InternalMove)
         self.table.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.table.setDragEnabled(True)
@@ -67,6 +102,7 @@ class FieldEditorPanel(QGroupBox):
     def _connect_signals(self) -> None:
         self.table.currentCellChanged.connect(self._on_selection)
         self.table.cellChanged.connect(self._on_cell_changed)
+        self.table.field_drop_requested.connect(self._on_field_drop_requested)
 
     # -- Public API --------------------------------------------------------
 
@@ -91,6 +127,11 @@ class FieldEditorPanel(QGroupBox):
 
     def selected_row(self) -> int:
         return self.table.currentRow()
+
+    def field_at_row(self, row: int) -> FieldSchema | None:
+        if self._header is None or row < 0 or row >= len(self._header.fields):
+            return None
+        return self._header.fields[row]
 
     # -- Internal ----------------------------------------------------------
 
@@ -151,6 +192,11 @@ class FieldEditorPanel(QGroupBox):
         self.btn_remove.setEnabled(has_sel)
         self.btn_up.setEnabled(has_sel)
         self.btn_down.setEnabled(has_sel)
+
+    def _on_field_drop_requested(self, source_row: int, target_row: int, to_end: bool) -> None:
+        if self._updating or self._header is None:
+            return
+        self.field_reordered.emit(source_row, target_row, to_end)
 
     def read_row(self, row: int) -> tuple[str, str, int]:
         """Return (name, type_str, bit_length) from the given table row."""

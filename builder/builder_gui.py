@@ -133,6 +133,7 @@ class BuilderWindow(QMainWindow):
         self.field_editor.btn_down.clicked.connect(self._on_field_down)
         self.field_editor.field_changed.connect(self._on_field_table_changed)
         self.field_editor.field_selected.connect(self._on_field_selected)
+        self.field_editor.field_reordered.connect(self._on_field_reordered)
 
     # --------------------------------------------------------- file actions
 
@@ -229,26 +230,18 @@ class BuilderWindow(QMainWindow):
             return
         schema = self.service.schema
         assert schema is not None
+        new_header: HeaderSchema | None = None
 
         if action == "add":
             name, ok = QInputDialog.getText(self, "Add Header", "Header name:")
             if not ok or not name.strip():
                 return
             try:
-                self.service.add_header(schema, name.strip())
-            except BuilderOperationError as exc:
-                QMessageBox.warning(self, "Error", str(exc))
-                return
-
-        elif action == "add_sub":
-            parent_hdr = self.header_tree.selected_header()
-            if parent_hdr is None:
-                return
-            name, ok = QInputDialog.getText(self, "Add Sub-header", "Sub-header name:")
-            if not ok or not name.strip():
-                return
-            try:
-                self.service.add_subheader(parent_hdr, name.strip())
+                selected = self.header_tree.selected_header()
+                if selected is None:
+                    new_header = self.service.add_header(schema, name.strip())
+                else:
+                    new_header = self.service.add_subheader(selected, name.strip())
             except BuilderOperationError as exc:
                 QMessageBox.warning(self, "Error", str(exc))
                 return
@@ -294,7 +287,50 @@ class BuilderWindow(QMainWindow):
                 self.statusBar().showMessage(str(exc), 2000)
                 return
 
+        elif action == "reordered":
+            self._refresh_preview()
+            self._refresh_validation()
+            self._refresh_total()
+            return
+
+        elif action == "rename":
+            selected_header = self.header_tree.selected_header()
+            selected_field = self.header_tree.selected_field()
+
+            if selected_header is not None:
+                parent = self.header_tree.selected_parent()
+                if parent is None:
+                    return
+                name, ok = QInputDialog.getText(
+                    self, "Rename Header", "Header name:", text=selected_header.name
+                )
+                if not ok or not name.strip():
+                    return
+                try:
+                    self.service.update_header(parent, selected_header, name=name.strip())
+                except BuilderOperationError as exc:
+                    QMessageBox.warning(self, "Error", str(exc))
+                    return
+            elif selected_field is not None:
+                parent_header = self.header_tree.selected_field_parent()
+                if parent_header is None:
+                    return
+                name, ok = QInputDialog.getText(
+                    self, "Rename Field", "Field name:", text=selected_field.name
+                )
+                if not ok or not name.strip():
+                    return
+                try:
+                    self.service.update_field(parent_header, selected_field, name=name.strip())
+                except BuilderOperationError as exc:
+                    QMessageBox.warning(self, "Error", str(exc))
+                    return
+            else:
+                return
+
         self._refresh_tree()
+        if new_header is not None:
+            self.header_tree.select_header(new_header)
         self._refresh_preview()
         self._refresh_validation()
         self._refresh_total()
@@ -323,6 +359,7 @@ class BuilderWindow(QMainWindow):
         except BuilderOperationError as exc:
             QMessageBox.warning(self, "Error", str(exc))
             return
+        self._refresh_tree()
         self.field_editor.refresh()
         self._refresh_preview()
         self._refresh_validation()
@@ -346,6 +383,7 @@ class BuilderWindow(QMainWindow):
         except BuilderOperationError as exc:
             QMessageBox.warning(self, "Error", str(exc))
             return
+        self._refresh_tree()
         self.field_editor.refresh()
         self._refresh_preview()
         self._refresh_validation()
@@ -362,6 +400,7 @@ class BuilderWindow(QMainWindow):
             self.statusBar().showMessage(str(exc), 2000)
             return
         row = self.field_editor.selected_row()
+        self._refresh_tree()
         self.field_editor.refresh()
         self.field_editor.table.setCurrentCell(max(0, row - 1), 0)
         self._refresh_preview()
@@ -377,6 +416,7 @@ class BuilderWindow(QMainWindow):
             self.statusBar().showMessage(str(exc), 2000)
             return
         row = self.field_editor.selected_row()
+        self._refresh_tree()
         self.field_editor.refresh()
         self.field_editor.table.setCurrentCell(
             min(self.field_editor.table.rowCount() - 1, row + 1), 0
@@ -404,6 +444,40 @@ class BuilderWindow(QMainWindow):
                 )
             except (BuilderOperationError, ValueError) as exc:
                 self.statusBar().showMessage(str(exc), 3000)
+        self._refresh_tree()
+        self._refresh_preview()
+        self._refresh_validation()
+        self._refresh_total()
+
+    def _on_field_reordered(self, source_row: int, target_row: int, to_end: bool) -> None:
+        hdr = self.header_tree.selected_header()
+        if hdr is None:
+            return
+
+        src_field = self.field_editor.field_at_row(source_row)
+        if src_field is None:
+            return
+
+        try:
+            if to_end:
+                self.service.move_field_to_end(hdr, src_field.name)
+                new_row = max(0, len(hdr.fields) - 1)
+            else:
+                dst_field = self.field_editor.field_at_row(target_row)
+                if dst_field is None or dst_field.name == src_field.name:
+                    return
+                self.service.swap_fields(hdr, src_field.name, dst_field.name)
+                new_row = target_row
+        except BuilderOperationError as exc:
+            self.statusBar().showMessage(str(exc), 3000)
+            return
+
+        self._refresh_tree()
+        self.field_editor.refresh()
+        if self.field_editor.table.rowCount() > 0:
+            self.field_editor.table.setCurrentCell(
+                min(new_row, self.field_editor.table.rowCount() - 1), 0
+            )
         self._refresh_preview()
         self._refresh_validation()
         self._refresh_total()
@@ -411,6 +485,15 @@ class BuilderWindow(QMainWindow):
     def _on_field_selected(self, field) -> None:
         if field is not None:
             self.property_panel.show_field(field)
+            return
+
+        header = self.header_tree.selected_header()
+        if header is not None:
+            self.property_panel.show_header(header)
+        elif self.service.has_schema:
+            self._show_packet_properties()
+        else:
+            self.property_panel.clear()
 
     # ------------------------------------------------------- refresh helpers
 
@@ -437,6 +520,7 @@ class BuilderWindow(QMainWindow):
     def _refresh_total(self) -> None:
         if self.service.has_schema:
             computed = compute_packet_bit_length(self.service.schema)  # type: ignore[arg-type]
+            self.service.schema.declared_total_bit_length = computed  # type: ignore[union-attr]
             self.packet_panel.update_total(computed)
 
     def _refresh_preview(self) -> None:
