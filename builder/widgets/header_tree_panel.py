@@ -121,7 +121,6 @@ class HeaderTreePanel(QGroupBox):
         self.btn_up = QPushButton("▲ Up")
         self.btn_down = QPushButton("▼ Down")
         for btn in (self.btn_add, self.btn_remove, self.btn_up, self.btn_down):
-        for btn in (self.btn_add, self.btn_remove, self.btn_up, self.btn_down):
             btn_layout.addWidget(btn)
         layout.addLayout(btn_layout)
 
