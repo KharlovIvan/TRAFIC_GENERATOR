@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<packet name="TEST_1_Counter" totalSize="124">
+    <field name="Counter" type="INTEGER" bitLength="16" startByte="16"/>
+</packet>

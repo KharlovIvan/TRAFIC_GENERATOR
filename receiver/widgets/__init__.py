@@ -1,0 +1,1 @@
+"""Receiver widget sub-package."""

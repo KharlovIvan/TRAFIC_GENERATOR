@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<packet name="TelemetryPayload" totalBitLength="976">
+    <header name="CommonHeader">
+        <field name="ProtocolVersion" type="INTEGER" bitLength="8"/>
+        <field name="MessageType" type="INTEGER" bitLength="8"/>
+        <field name="Flags" type="INTEGER" bitLength="16"/>
+        <field name="SessionId" type="INTEGER" bitLength="32"/>
+        <field name="DeviceName" type="STRING" bitLength="64"/>
+        <field name="IsActive" type="BOOLEAN" bitLength="8"/>
+        <field name="Reserved" type="RAW_BYTES" bitLength="56"/>
+    </header>
+    <header name="TelemetryBlock">
+        <field name="Counter" type="INTEGER" bitLength="32"/>
+        <field name="TemperatureRaw" type="INTEGER" bitLength="16"/>
+        <field name="PressureRaw" type="INTEGER" bitLength="16"/>
+        <field name="StatusText" type="STRING" bitLength="128"/>
+        <field name="PayloadEnabled" type="BOOLEAN" bitLength="8"/>
+        <field name="TelemetryData" type="RAW_BYTES" bitLength="248"/>
+    </header>
+    <header name="DiagnosticsSection">
+        <header name="ErrorBlock">
+            <field name="ErrorCode" type="INTEGER" bitLength="32"/>
+            <field name="Severity" type="INTEGER" bitLength="8"/>
+            <field name="AckRequired" type="BOOLEAN" bitLength="8"/>
+            <field name="ErrorText" type="STRING" bitLength="96"/>
+        </header>
+        <header name="RawDumpBlock">
+            <field name="DumpLength" type="INTEGER" bitLength="16"/>
+            <field name="DumpData" type="RAW_BYTES" bitLength="176"/>
+        </header>
+    </header>
+</packet>

@@ -1,0 +1,14 @@
+[package]
+name = "trafic-native"
+version = "0.1.0"
+edition = "2021"
+description = "Native high-performance backend for Traffic Generator"
+
+[lib]
+name = "trafic_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+socket2 = "0.5"
+libloading = "0.8"

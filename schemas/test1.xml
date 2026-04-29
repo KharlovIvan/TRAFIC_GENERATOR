@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<packet name="test" totalBitLength="64">
+    <header name="H1">
+        <header name="H1_1">
+            <field name="F1_1_1" type="INTEGER" bitLength="104"/>
+            <field name="F1_1_2" type="BOOLEAN" bitLength="8"/>
+        </header>
+        <header name="H1_2"/>
+    </header>
+    <header name="H2"/>
+</packet>

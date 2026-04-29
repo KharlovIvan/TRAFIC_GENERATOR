@@ -1,0 +1,1 @@
+"""Sender widget sub-package."""

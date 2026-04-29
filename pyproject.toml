@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trafic-generator"
+version = "0.1.0"
+description = "Traffic generator project"
+requires-python = ">=3.12"
+dependencies = [
+    "PySide6>=6.6",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

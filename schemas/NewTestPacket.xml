@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<packet name="NewTestPacket" totalBitLength="928">
+    <header name="Header1">
+        <field name="field1" type="INTEGER" bitLength="8"/>
+        <field name="field2" type="STRING" bitLength="8"/>
+        <field name="field3" type="BOOLEAN" bitLength="8"/>
+        <field name="field4" type="RAW_BYTES" bitLength="8"/>
+        <header name="Subheader1">
+            <field name="field1" type="INTEGER" bitLength="16"/>
+            <field name="field2" type="STRING" bitLength="32"/>
+            <field name="field3" type="BOOLEAN" bitLength="8"/>
+            <field name="field4" type="RAW_BYTES" bitLength="128"/>
+        </header>
+    </header>
+    <header name="Header2">
+        <field name="field1" type="INTEGER" bitLength="8"/>
+        <field name="field2" type="STRING" bitLength="128"/>
+        <field name="field3" type="BOOLEAN" bitLength="8"/>
+        <field name="field4" type="RAW_BYTES" bitLength="24"/>
+        <header name="Subheader2">
+            <field name="field1" type="INTEGER" bitLength="96"/>
+            <field name="field2" type="STRING" bitLength="32"/>
+            <field name="field3" type="BOOLEAN" bitLength="8"/>
+            <field name="field4" type="RAW_BYTES" bitLength="24"/>
+        </header>
+        <header name="Subheader3">
+            <field name="field1" type="INTEGER" bitLength="64"/>
+            <field name="field2" type="STRING" bitLength="64"/>
+            <field name="field3" type="RAW_BYTES" bitLength="128"/>
+            <field name="field4" type="RAW_BYTES" bitLength="128"/>
+        </header>
+    </header>
+</packet>
